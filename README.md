@@ -45,6 +45,8 @@ Default fanconfig.ini
 
 ```
 
+## Work that needs to be completed
+
 - [x] Implement the initial service for running the fan speed
 - [ ] Add in support for reading the config file
 - [ ] Add support for proper logging (move the logging out of the main file?)
