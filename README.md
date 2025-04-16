@@ -44,3 +44,11 @@ Default fanconfig.ini
   70 = 100
 
 ```
+
+- [x] Implement the initial service for running the fan speed
+- [ ] Add in support for reading the config file
+- [ ] Add support for proper logging (move the logging out of the main file?)
+- [ ] Support for selecting the users configuration settings
+- [ ] Create installer script
+- [ ] Publish scripts on printables
+
