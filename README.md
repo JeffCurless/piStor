@@ -9,6 +9,8 @@ Raspberry PI based storage using a Radxa Penta Hat
 - piStor - Foot.stl          - Print out of a TPU or Flex filamanet, helps cut down on vibration.
 - piStor - MicroSD Hatch.stl - Hatch to cover the SD card area of the PI.
 
+## Build Instructions
+
 ## Fan Speed Service
 
 The fan service will operate in one of two modes.
