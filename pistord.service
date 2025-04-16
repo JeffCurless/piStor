@@ -1,0 +1,11 @@
+[Unit]
+Description=piStor Fan control service
+After=boot-complete.target
+[Service]
+Type=simple
+Restart=always
+RemainAfterExit=true
+ExecStart=/usr/bin/python3 /etc/pistor/pistord.py SERVICE
+ExecStopPost=/usr/bin/python3 /etc/pistor/pistord.py SHUTDOWN
+[Install]
+WantedBy=multi-user.target
