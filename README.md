@@ -54,3 +54,7 @@ Default fanconfig.ini
 - [ ] Create installer script
 - [ ] Publish scripts on printables
 
+## Supported Operating Systems
+
+> [!NOTE]
+> This code is currently only supported on 64 bit Raspberry PI OS.  There is not current plan to make it operational on any other OS at this time.
