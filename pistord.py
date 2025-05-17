@@ -1,7 +1,8 @@
 #!/usr/bin/python3
 #
-# Setup environment and pull in all of the items we need from gpiozero.  The gpiozero library is the new one that
-# supports Raspberry PI 5's (and I suspect will be new direction for all prior version the RPIi.)
+# Setup environment and pull in all of the items we need from gpiozero.  The
+# gpiozero library is the new one that supports Raspberry PI 5's (and I suspect
+# will be new direction for all prior version the RPIi.)
 #
 
 from threading import Thread
@@ -103,13 +104,15 @@ def setupTemperatureObject():
 
 def controlFan():
     '''
-    This routine is responsible for controlling the fan.  The fan control process is every period of time
-    the code wakes up and gets the current CPU temp.  Using the CPU temperature, we determine what fan speed
-    to use to cool down the CPU
+    This routine is responsible for controlling the fan.  The fan control
+    process is every period of time the code wakes up and gets the current CPU
+    temp. Using the CPU temperature, we determine what fan speed to use to cool
+    down the CPU
 
-    A word on the cpu temperature object.  When setting up the CPU temperature object, we provide it with the
-    minimum and maximum temperatures.  While we can get the current temp, we can also get a value (0->1) that
-    directly maps to the minimum and maximum values we setup.  
+    A word on the cpu temperature object.  When setting up the CPU temperature
+    object, we provide it with the minimum and maximum temperatures.  While we
+    can get the current temp, we can also get a value (0->1) that directly maps
+    to the minimum and maximum values we setup.  
 
     '''
     fan = setupFan( FAN_PWM_GPIO )
@@ -136,8 +139,8 @@ def controlFan():
         
 def turnOffFan():
     '''
-    Attempt to turn off the fan, this is normally called from a service shutdown, so
-    the code is operating in a different context, and different process.
+    Attempt to turn off the fan, this is normally called from a service shutdown,
+    so the code is operating in a different context, and different process.
     
     '''
     try:
