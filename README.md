@@ -29,9 +29,9 @@ The other option for fan speed is a table of CPU temperatures, with the fan spee
 65 = 100
 ```
 
-The decision as to how you want the fan controlled is based on the contents of the fanconfig.ini file.
+The decision as to how you want the fan controlled is based on the contents of the pistor.conf file.
 
-Default fanconfig.ini
+Default pistor.conf
 
 ```
 [mode]
