@@ -9,9 +9,10 @@ from threading import Thread
 from queue import Queue
 from gpiozero import PWMOutputDevice
 from gpiozero import CPUTemperature
+from logger import Logger
 import time
 import sys
-import logging
+from configtool import *
 
 #
 # Some helpful constants
@@ -23,45 +24,14 @@ maxTemp        = 80     # Maximum temp we can let the CPU get to
 FAN_PWM_GPIO   = 14     # Fan PWM line is connected to GPIO 14
 FAN_TACK_GPIO  = 18     # Fan TAC line is connected to GPIO 18
 
-UPDATE_PERIOD  = 5      # Number of seconds between checking the temperature and modifing the fan speed
+UPDATE_PERIOD  = 5      # Number of seconds between checking the temperature and
+                        # modifing the fan speed
 
-class Logger:
-    def __init__(self,level=logging.DEBUG):
-        self._logEnabled = True
-        try:
-            logging.basicConfig( filename='/var/log/piStord.log',
-                                 filemode='a',
-                                 level=level,
-                                 format='%(asctime)s %(process)d [%(levelname)s] %(message)s',
-                                 datefmt='%b %d %y %H:%M:%S')
-        except Exception as error:
-            print( f"Error: Could not log events due to {error}." )
-            self._logEnabled = False
-    def info( self, message ):
-        if self._logEnabled:
-            logging.info( message )
-        else:
-            print( f"INFO: {message}" )
-    
-    def debug( self, message ):
-        if self._logEnabled:
-            logging.debug( message )
-        else:
-            print( f"DEBUG: {message}" )
-    
-    def error( self, message ):
-        if self._logEnabled:
-            logging.error( message )
-        else:
-            print( f"(ERROR: {message}" )
-    
-    def forceConsole():
-        self._logEnabled = False
-#
+
 # Setup a logging object
 #
-log = Logger()
-            
+log = Logger('/var/log/piStord.log')
+
 def setupFan(fanPWMGPIO):
     '''
     This routine creates an object that we can utilize to communicate with the
@@ -87,9 +57,9 @@ def setupTemperatureObject():
     '''
     Get a cpu temperature object, and set the min and max range.  
 
-    When the ranges are set to the non-default values, if the temperature is less
-    than min_temp we get 0, and when the temperature reaches the max we get a 
-    value of 1.  This value can be used directly as a duty cycle for the fan.
+    When the ranges are set to the non-default values, if the temperature is
+    less than min_temp we get 0, and when the temperature reaches the max we get
+    a value of 1.  This value can be used directly as a duty cycle for the fan.
 
     Return:
         A CPU temperature object
@@ -102,7 +72,7 @@ def setupTemperatureObject():
         
     return cpuTemp
 
-def controlFan():
+def controlFanAuto():
     '''
     This routine is responsible for controlling the fan.  The fan control
     process is every period of time the code wakes up and gets the current CPU
@@ -115,6 +85,8 @@ def controlFan():
     to the minimum and maximum values we setup.  
 
     '''
+    log.info( "Starting fan control service in automatic mode." )
+    
     fan = setupFan( FAN_PWM_GPIO )
     cpuTemp = setupTemperatureObject()
 
@@ -122,7 +94,7 @@ def controlFan():
         count = 0
         while True:
             if (count % 720) == 0:
-                logg.debug( f"cpu {cpuTemp.temperature} fan: {fan.value:0.2} cpu.value {cpuTemp.value:0.2}" )
+                log.debug( f"CPU {cpuTemp.temperature} fan: {fan.value:0.2} cpu.value {cpuTemp.value:0.2}" )
     
             #
             # Add 0.1 to the range given if we can... max out the value
@@ -137,6 +109,79 @@ def controlFan():
         fan.value = 0.0
         log.error( f"An error ocurred during fan speed processing, Error is {error}" )
         
+def getFanSpeed( temp, speedList ):
+    '''
+    Obtain the speed the fan should be running at given the current CPU temp,
+    and the list of (temp,speed) tuples.  This search is walk down the list of
+    tuples and stop when the temperature of the tuple is higher than the CPU
+    temperature.
+    
+    Parameters:
+        temp      - The current temperature if the CPU
+        speedList - A list of tuples. Each tuple contains a CPU temp, and
+                    corresponding than speed.
+                   
+    Returns:
+        A suggested speed, normalized from 0 - 1 (0% and 100%)
+    '''
+    speed = -1
+    for item in speedList:
+        log.debug( f"CPU: {temp} tuple: {item} speed: {speed}" )
+        if temp >= item[0]:
+            speed = item[1]
+        else:
+            break
+    if speed == -1:
+        speed = 100
+    return speed / 100
+    
+def controlFanManual( cpufanSpeed ):
+    '''
+    Perform the fan speed operations based on the manual settings from the
+    configuration file.
+    
+    Parameters:
+        cpufanSpeed - A list of tuples containing a CPU temp and the corresponding
+                      fan speed.
+    '''
+    
+    log.info( f"Starting fan control service in manual mode using data: {cpufanSpeed}." )
+    fan = setupFan( FAN_PWM_GPIO )
+    cpuTemp = setupTemperatureObject()
+    
+    try:
+        count = 0
+        while True:
+            if (count % 720) == 0:
+                log.debug( f"CPU {cpuTemp.temperature} fan: {fan.value:0.2} cpu.value {cpuTemp.value:0.2}" )
+                
+            #
+            fan.value = getFanSpeed( cpuTemp.temperature, cpufanSpeed )
+            
+            #
+            time.sleep( UPDATE_PERIOD )            
+            count += 1
+    except Exception as error:
+        fan.value = 0.0
+        log.error( f"An error occured during fan speed processing, Error is {error}" )
+        
+def startFanControl():
+    '''
+    Call this function to start the fan controller.  If the system is configured
+    to run automatically, call the automatic control function, if not call manual,
+    if we have no idea what we are supposed todo... default to autmoatic.
+    
+    '''
+    config = piStorConfig( '/etc/pistor.conf' )
+    match config.getMode():
+        case 1:
+            controlFanAuto()
+        case 0:
+            controlFanManual( config.getFanSpeed() )
+        case _:
+            log.error( f"Unknown fan mode of {mode}, reverting to automatic." )
+            controlFanAuto()
+    
 def turnOffFan():
     '''
     Attempt to turn off the fan, this is normally called from a service shutdown,
@@ -150,6 +195,9 @@ def turnOffFan():
         log.error( f"Could not turn off fan, Error: {error}" )
         
 def usage():
+    '''
+    Print the usage of this service, if anyone runs it locally.
+    '''
     print( "piStord - Fan Service for the piStor data server.\n" )
     print( "usage: pystord <options>" )
     print( "    SHUTDOWN    - Shutdown the piStor fan... issued when the user shutdown the service." )
@@ -157,6 +205,9 @@ def usage():
     print( "    VERSION     - Report the version of the piStor Daemon." )
     print( "    DEBUG       - Launches the fan control without spawning a thread." )
 
+#
+# Main entry point
+#
 if len(sys.argv) > 1:
     cmd = sys.argv[1].upper()
     match cmd:
@@ -167,7 +218,7 @@ if len(sys.argv) > 1:
         case "SERVICE":
             try:
                 log.info( f"piStor Fan Service starting... Version {PYSTOR_VERSION}." )
-                thread1 = Thread(target = controlFan )
+                thread1 = Thread(target = startFanControl )
                 thread1.start()
             except Exception as error:
                 log.info( f"Could not start sercice threads, Error {error}" )
@@ -176,7 +227,7 @@ if len(sys.argv) > 1:
             print( f"Version: {PYSTOR_VERSION}" )
         case "DEBUG":
             log.forceConsole()
-            controlFan()
+            startFanControl()
         case _:
             usage()
 else:

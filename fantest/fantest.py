@@ -1,6 +1,10 @@
-from fansimulator import getCPUTemp,setFanSpeed
+from fansimulator import getCPUTemp,setFanSpeed,startTest,stopTest
 import time
 
+startTest( 'fantest.csv', 'run2' )
+
+fanSpeed = 0
+prevSpeed = 0
 for i in range(150):
     temp = getCPUTemp()
     if temp > 54:
@@ -12,7 +16,11 @@ for i in range(150):
     else:
         fanSpeed = 0
     print( f"Pass {i} CPU {temp} Fan {fanSpeed}" )
-    setFanSpeed( fanSpeed )
-    time.sleep(0.1)
+    if fanSpeed != prevSpeed:
+        setFanSpeed( fanSpeed )
+        prevSpeed = fanSpeed
+    #time.sleep(0.1)
+    
+stopTest()
 
 
