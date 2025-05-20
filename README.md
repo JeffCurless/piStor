@@ -33,7 +33,7 @@ Default fanconfig.ini
 
 ```
 [mode]
-  fancontrol = 0  # 0 - automatic, 1 - Ranges
+  autofan = 1  # 1 - automatic, 0 - Manual
 
 [FanSpeeds]
   # CPU temp = Fan Speed Percentage
@@ -50,9 +50,9 @@ Default fanconfig.ini
 ## Work that needs to be completed
 
 - [x] Implement the initial service for running the fan speed
-- [ ] Add in support for reading the config file
-- [ ] Add support for proper logging (move the logging out of the main file?)
-- [ ] Support for selecting the users configuration settings
+- [x] Add in support for reading the config file
+- [x] Add support for proper logging (move the logging out of the main file?)
+- [x] Support for selecting the users configuration settings
 - [ ] Create installer script
 - [ ] Publish scripts on printables
 
