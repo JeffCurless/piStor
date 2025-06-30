@@ -44,7 +44,7 @@ sudo chmod 644 $INSTALLSERICEFOLDER/pistord.service
 #
 # Start service
 #
-sudo systemctl daemin-reload
+sudo systemctl daemon-reload
 sudo systemctl enable pistord.service
 sudo systemctl start pistord.service
 
