@@ -12,7 +12,7 @@ class Logger:
     '''
     Initialize the logger.  
     '''
-    def __init__(self,filename,level=logging.DEBUG):
+    def __init__(self,filename=None,level=logging.DEBUG):
         self._logEnabled = True
         try:
             if filename == None:
@@ -53,7 +53,30 @@ class Logger:
         else:
             print( f"DEBUG: {message}" )
     
+    def warn( self, message ):
+        '''
+        Write the message out using the warn level
+ 
+        Parameters:
+            message - The message to log
+
+        '''
+        if self._logEnabled:
+            logging.warning( message )
+        else:
+            print( f"WARN: {message}" )
+
+    def warning( self, message ):
+        self.warn( message )
+
     def error( self, message ):
+        '''
+        Write the message out using the error level
+
+        Parameters:
+            message - The message to log
+
+        '''
         if self._logEnabled:
             logging.error( message )
         else:
@@ -66,3 +89,10 @@ class Logger:
         '''
         self._logEnabled = False
 #
+# 
+#
+if __name__ == "__main__":
+    log = Logger("test.log")
+    log.warn( "Testing..." )
+
+

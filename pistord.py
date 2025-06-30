@@ -94,6 +94,8 @@ def controlFanAuto():
         count = 0
         while True:
             if (count % 720) == 0:
+                if fan.value >= 1.0:
+                    log.warning( f"Temperature at {cpuTemp.temperature} fan running at 100%." )
                 log.debug( f"CPU {cpuTemp.temperature} fan: {fan.value:0.2} cpu.value {cpuTemp.value:0.2}" )
     
             #
@@ -102,7 +104,7 @@ def controlFanAuto():
             if cpuTemp.value + 0.1 <= 1.0:
                 fan.value = cpuTemp.value + 0.1
             else:
-                fan.value = cpuTemp.value
+                fan.value = 1.0
             time.sleep( UPDATE_PERIOD )
             count += 1
     except Exception as error:
