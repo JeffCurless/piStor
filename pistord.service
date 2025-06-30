@@ -1,5 +1,5 @@
 [Unit]
-Description=piStor Fan control service
+Description=piStor Fan Control Service
 After=boot-complete.target
 [Service]
 Type=simple
