@@ -55,8 +55,10 @@ Default pistor.conf
 - [x] Add in support for reading the configuration file
 - [x] Add support for proper logging (move the logging out of the main file?)
 - [x] Support for selecting the users configuration settings
-- [ ] Create installer script
-- [ ] Publish scripts on Printables
+- [X] Create installer script
+- [X] Publish scripts on Printables
+- [ ] Add Uninstall support
+- [ ] Support other Operating Systems
 
 ## Supported Operating Systems
 
