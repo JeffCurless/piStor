@@ -5,14 +5,17 @@ echo " piStor Fan Control Service Setup "
 echo "**********************************"
 
 # Helper variables
-DOWNLOADSERVER=https://raw.githubusercontent.com/JeffCurless/argoneon/main/
-INSTALLATIONFOLDER=/etc/pistor
+DOWNLOADSERVER=https://raw.githubusercontent.com/JeffCurless/piStor/main/
+INSTALLROOT=/etc
+INSTALLATIONFOLDER=$INSTALLROOT/pistor
+INSTALLSERVICEFOLDER=/lib/systemd/system
 
 echo "Tested on Raspberry Pi OS 12 (Bookworm)"
 #
 # Make sure packages are installed
 #
-sudo pip3 install gpiozero
+#sudo apt install python3
+#sudo pip3 install gpiozero
 
 #
 # Create installation directory
@@ -29,14 +32,14 @@ sudo curl -L $DOWNLOADSERVER/configtool.py -o $INSTALLATIONFOLDER/configtool.py 
 sudo chmod 755 $INSTALLATIONFOLDER/configtool.py
 sudo curl -L $DOWNLOADSERVER/pistord.py -o $INSTALLATIONFOLDER/pistord.py --silent
 sudo chmod 755 $INSTALLATIONFOLDER/pistord.py
-sudo curl -L $DOWNLOADSERVER/pistor.conf -o /etc/pistor.conf --silent
-sudo chmod 755 /etc/pistor.conf
+sudo curl -L $DOWNLOADSERVER/pistor.conf -o $INSTALLROOT/pistor.conf --silent
+sudo chmod 755 $INSTALLROOT/pistor.conf
 
 #
 # Copy service to systemd area
 #
-sudo curl -L $DOWNLOADSERVER/pistord.service -o /lib/systemd/system/pistord.servicei --silent
-sudo chmod 644 /lib/systemd/system/pistord.service
+sudo curl -L $DOWNLOADSERVER/pistord.service -o $INSTALLSERVICEFOLDER/pistord.service --silent
+sudo chmod 644 $INSTALLSERICEFOLDER/pistord.service
 
 #
 # Start service
