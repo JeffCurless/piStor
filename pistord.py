@@ -7,7 +7,7 @@
 
 from threading import Thread
 from queue import Queue
-from gpiozero import PWMOutputDevice
+from gpiozero import PWMOutputDevice, GPIODevice
 from gpiozero import CPUTemperature
 from logger import Logger
 import time
@@ -49,7 +49,7 @@ def setupFan(fanPWMGPIO):
         fan.value = 0
     except Exception as error:
         log.error( "Error attempting to create output PWM device, error is {error}" )
-        raise valueError( "Cannot setup Fan!" )
+        raise ValueError( "Cannot setup Fan!" )
       
     return fan
 
@@ -106,6 +106,7 @@ def controlFanAuto():
             else:
                 fan.value = 1.0
             time.sleep( UPDATE_PERIOD )
+            
             count += 1
     except Exception as error:
         fan.value = 0.0
@@ -136,7 +137,7 @@ def getFanSpeed( temp, speedList ):
     if speed == -1:
         speed = 100
     return speed / 100
-    
+  
 def controlFanManual( cpufanSpeed ):
     '''
     Perform the fan speed operations based on the manual settings from the
@@ -210,6 +211,7 @@ def usage():
 #
 # Main entry point
 #
+
 if len(sys.argv) > 1:
     cmd = sys.argv[1].upper()
     match cmd:
