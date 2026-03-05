@@ -1,4 +1,19 @@
 #!/usr/bin/python3
+'''
+piStor fan control daemon for Raspberry Pi 5.
+
+Reads CPU temperature via gpiozero and adjusts a PWM fan connected to:
+  - Fan PWM: GPIO 13 (Pin 33)
+  - Fan tachometer: GPIO 18
+
+CLI arguments:
+  SERVICE   - Start the fan control daemon in a background thread.
+  SHUTDOWN  - Log shutdown and exit (fan stops when process exits).
+  VERSION   - Print the daemon version number.
+  DEBUG     - Run fan control in the foreground, logging to console.
+
+Requires the gpiozero library (sudo pip3 install gpiozero).
+'''
 #
 # Setup environment and pull in all of the items we need from gpiozero.  The
 # gpiozero library is the new one that supports Raspberry PI 5's (and I suspect
@@ -12,6 +27,7 @@ from gpiozero import CPUTemperature
 from logger import Logger
 import time
 import sys
+import os
 from configtool import *
 
 #
@@ -55,14 +71,10 @@ def setupFan(fanPWMGPIO):
 
 def setupTemperatureObject():
     '''
-    Get a cpu temperature object, and set the min and max range.  
-
-    When the ranges are set to the non-default values, if the temperature is
-    less than min_temp we get 0, and when the temperature reaches the max we get
-    a value of 1.  This value can be used directly as a duty cycle for the fan.
+    Create and return a default CPUTemperature object.
 
     Return:
-        A CPU temperature object
+        A CPUTemperature object, or None if creation fails.
     '''
     cpuTemp = None
     try:
@@ -74,16 +86,12 @@ def setupTemperatureObject():
 
 def controlFanAuto():
     '''
-    This routine is responsible for controlling the fan.  The fan control
-    process is every period of time the code wakes up and gets the current CPU
-    temp. Using the CPU temperature, we determine what fan speed to use to cool
-    down the CPU
+    Control the fan automatically based on CPU temperature.
 
-    A word on the cpu temperature object.  When setting up the CPU temperature
-    object, we provide it with the minimum and maximum temperatures.  While we
-    can get the current temp, we can also get a value (0->1) that directly maps
-    to the minimum and maximum values we setup.  
-
+    Runs an infinite loop waking every UPDATE_PERIOD seconds. On each iteration
+    the fan duty cycle is set to cpuTemp.value + 0.1, clamped to 1.0. Every
+    720 iterations a debug log line is emitted (and a warning if the fan is
+    already at 100%).
     '''
     log.info( "Starting fan control service in automatic mode." )
     
@@ -114,18 +122,20 @@ def controlFanAuto():
         
 def getFanSpeed( temp, speedList ):
     '''
-    Obtain the speed the fan should be running at given the current CPU temp,
-    and the list of (temp,speed) tuples.  This search is walk down the list of
-    tuples and stop when the temperature of the tuple is higher than the CPU
-    temperature.
-    
+    Return the fan duty cycle for the given CPU temperature.
+
+    Walks speedList in order, updating the candidate speed for each threshold
+    that temp meets or exceeds, and stopping at the first threshold that temp
+    falls below. If temp is below all thresholds (no match), returns 1.0 (100%)
+    as a safe fallback.
+
     Parameters:
-        temp      - The current temperature if the CPU
-        speedList - A list of tuples. Each tuple contains a CPU temp, and
-                    corresponding than speed.
-                   
+        temp      - The current CPU temperature in degrees Celsius.
+        speedList - A list of (cpu_temp, fan_speed_pct) tuples sorted ascending
+                    by cpu_temp. fan_speed_pct is in the 0-100 range.
+
     Returns:
-        A suggested speed, normalized from 0 - 1 (0% and 100%)
+        Fan duty cycle as a float in the range 0.0-1.0 (normalized from 0-100%).
     '''
     speed = -1
     for item in speedList:
@@ -168,15 +178,27 @@ def controlFanManual( cpufanSpeed ):
         fan.value = 0.0
         log.error( f"An error occured during fan speed processing, Error is {error}" )
         
+CONFIG_PATH = '/etc/pistor.conf'
+
 def startFanControl():
     '''
-    Call this function to start the fan controller.  If the system is configured
-    to run automatically, call the automatic control function, if not call manual,
-    if we have no idea what we are supposed todo... default to autmoatic.
-    
+    Start the fan controller using the mode from /etc/pistor.conf.
+
+    If the config file does not exist, logs a warning and starts in automatic
+    mode with default settings. Otherwise reads the config and dispatches to
+    the appropriate control function:
+      1 (AUTO_FAN)   - calls controlFanAuto()
+      0 (MANUAL_FAN) - calls controlFanManual() with the configured speed table
+      other          - logs an error and falls back to controlFanAuto()
     '''
-    config = piStorConfig( '/etc/pistor.conf' )
-    match config.getMode():
+    if not os.path.isfile( CONFIG_PATH ):
+        log.warning( f"Config file {CONFIG_PATH} not found, starting with defaults (auto mode)." )
+        controlFanAuto()
+        return
+
+    config = piStorConfig( CONFIG_PATH )
+    mode = config.getMode()
+    match mode:
         case 1:
             controlFanAuto()
         case 0:
@@ -187,9 +209,10 @@ def startFanControl():
     
 def turnOffFan():
     '''
-    Attempt to turn off the fan, this is normally called from a service shutdown,
-    so the code is operating in a different context, and different process.
-    
+    Log the fan shutdown message. Called when the SHUTDOWN CLI argument is used.
+
+    The fan itself stops when the service process exits and gpiozero releases the
+    GPIO pin. Any GPIO errors are logged but do not raise.
     '''
     try:
         fan = setupFan( FAN_PWM_GPIO )

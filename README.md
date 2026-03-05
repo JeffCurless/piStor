@@ -11,42 +11,104 @@ Raspberry PI based storage using a Radxa Penta Hat
 
 ## Build Instructions
 
+## Installation
+
+Install the service using the provided setup script. It downloads all required files from GitHub, places them under `/etc/pistor/`, installs the systemd unit, and starts the service.
+
+```bash
+sudo bash setup.sh
+```
+
+**Prerequisites** — the `gpiozero` library must be installed before running the setup script:
+
+```bash
+sudo pip3 install gpiozero
+```
+
+**Service management after install:**
+
+```bash
+sudo systemctl status pistord.service
+sudo systemctl start pistord.service
+sudo systemctl stop pistord.service
+sudo systemctl restart pistord.service
+```
+
+**Logs** are written to `/var/log/piStord.log` and can also be viewed via journald:
+
+```bash
+journalctl -u pistord.service
+```
+
 ## Fan Speed Service
 
-The fan service will operate in one of two modes.
+### Hardware
 
-1. Fully automatic and variable.
-2. Defined ranges.
+The service controls a PWM fan connected to the following GPIO pins on the Raspberry Pi 5:
 
-With the variable speed fan, as the CPU temperature rises, the Fan speed will increase.  This can, depending on the fan manufacturer cause a irritable flucuation in the noise coming from the fan, if the settings are change quickly enough.  However with a good fan (Noctua for instance), the fan noise is very limited and I find this very acceptable.
+| Signal      | GPIO | Header Pin |
+|-------------|------|------------|
+| PWM control | 13   | Pin 33     |
+| Tachometer  | 18   | —          |
 
-The other option for fan speed is a table of CPU temperatures, with the fan speed set accordingly.  For instance you may decide that if your CPU is running at 65C, you want the fan at 100%, or if its at 40C, you want the speed to be 30%.
+### Fan Control Modes
 
-```
-30 = 25
-40 = 30
-50 = 55
-65 = 100
-```
+The service operates in one of two modes, selected by the `autofan` key in `/etc/pistor.conf`.
 
-The decision as to how you want the fan controlled is based on the contents of the pistor.conf file.
+#### Automatic Mode (`autofan = 1`)
 
-Default pistor.conf
+Fan speed is set continuously based on CPU temperature. Every 5 seconds the daemon reads the CPU temperature as a 0.0–1.0 value (where 0.0 = 0 °C and 1.0 = 100 °C) and adds 0.1 of headroom, clamped to a maximum of 1.0 (100%). For example, a CPU at 50 °C produces a fan duty cycle of 60%.
 
-```
-[mode]
-  autofan = 1  # 1 - automatic, 0 - Manual
+This can, depending on the fan manufacturer, cause fluctuation in fan noise as temperature changes. However with a quality fan (such as a Noctua), the variation is minimal.
 
+#### Manual Mode (`autofan = 0`)
+
+Fan speed is determined by a temperature threshold table defined in the `[FanSpeeds]` section of the config file. The daemon walks the table every 5 seconds and applies the speed for the highest threshold the CPU temperature meets or exceeds. If the CPU temperature is below all thresholds the fan runs at 100% as a safe fallback.
+
+Example table:
+
+```ini
 [FanSpeeds]
-  # CPU temp = Fan Speed Percentage
-  29 = 0
-  30 = 20
-  40 = 30
-  50 = 40
-  60 = 50
-  65 = 70
-  70 = 100
+  30 = 25   # at or above 30 °C → 25% fan speed
+  40 = 30   # at or above 40 °C → 30%
+  50 = 55   # at or above 50 °C → 55%
+  65 = 100  # at or above 65 °C → 100%
+```
 
+### Configuration File
+
+The configuration file is installed at `/etc/pistor.conf`. If the file is missing when the service starts, it will log a warning and run in automatic mode with default settings.
+
+```ini
+[mode]
+   autofan = 1        # 1 = automatic mode, 0 = manual table mode
+
+[FanSpeeds]           # Only used when autofan = 0
+   20 = 0             # CPU temp (°C) = fan speed (%)
+   30 = 20
+   40 = 30
+   50 = 40
+   60 = 50
+   65 = 70
+   70 = 100
+```
+
+### Running Locally
+
+The daemon can be run directly from the command line for testing:
+
+```bash
+# Print version
+python3 pistord.py VERSION
+
+# Run fan control in the foreground with console logging (no thread spawned)
+python3 pistord.py DEBUG
+
+# Start as a background thread (normal service mode)
+python3 pistord.py SERVICE
+
+# Signal shutdown
+python3 pistord.py SHUTDOWN
 ```
 
 ## Work that needs to be completed

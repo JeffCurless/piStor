@@ -20,11 +20,21 @@ t = time.time()
 
 def fell(n):
     '''
-    This routine tracks the falling edge of the PWM signal that tells us what speed the fan
-    is running at.  We track it based on the time that has passed since the last time the
-    signal falls.
-    
-    
+    GPIO interrupt callback for falling edges on the tachometer (TAC) signal.
+
+    Called by RPi.GPIO each time FAN_TACK_GPIO goes low. Computes the time
+    delta since the last falling edge and converts it to RPM using the PULSE
+    constant (pulses per revolution). Updates the global variables `t` (last
+    event timestamp) and `rpm` (current fan speed in RPM).
+
+    Edges closer than 0.005 seconds apart are ignored as debounce filtering.
+
+    Parameters:
+        n - GPIO channel number (provided by RPi.GPIO, not used directly).
+
+    Globals modified:
+        t   - Updated to the current timestamp after a valid edge.
+        rpm - Updated with the computed RPM value.
     '''
     global t
     global rpm

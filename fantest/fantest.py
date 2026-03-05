@@ -1,3 +1,10 @@
+'''
+Fan control test script for piStor.
+
+Exercises the BoardSimulator by running a simulated fan control loop over
+150 iterations, adjusting fan speed based on CPU temperature thresholds and
+recording results to a CSV file via the fansimulator module.
+'''
 from fansimulator import getCPUTemp,setFanSpeed,startTest,stopTest
 import time
 
