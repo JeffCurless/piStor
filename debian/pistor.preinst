@@ -1,0 +1,21 @@
+#!/bin/sh
+# Copyright (c) 2024-2026 Jeff Curless
+# SPDX-License-Identifier: MIT
+#
+# On first install, clean up a manual install done by setup.sh (scripts in
+# /etc/pistor/).  /etc/pistor.conf is left alone so the user's settings are
+# kept; dpkg will ask whether to keep it if it differs from the default.
+set -e
+
+if [ "$1" = "install" ] && [ -f /etc/pistor/pistord.py ]; then
+    if [ -d /run/systemd/system ]; then
+        deb-systemd-invoke stop pistord.service >/dev/null 2>&1 || true
+    fi
+    rm -f /etc/pistor/pistord.py /etc/pistor/configtool.py /etc/pistor/logger.py
+    rm -rf /etc/pistor/__pycache__
+    rmdir /etc/pistor 2>/dev/null || true
+fi
+
+#DEBHELPER#
+
+exit 0

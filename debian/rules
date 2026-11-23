@@ -1,0 +1,28 @@
+#!/usr/bin/make -f
+# Copyright (c) 2024-2026 Jeff Curless
+# SPDX-License-Identifier: MIT
+
+export PYTHONDONTWRITEBYTECODE=1
+
+%:
+	dh $@
+
+# Plain scripts, nothing to build.
+override_dh_auto_build:
+
+# Run the unit tests (hardware is mocked); skip with DEB_BUILD_OPTIONS=nocheck.
+override_dh_auto_test:
+ifeq (,$(filter nocheck,$(DEB_BUILD_OPTIONS)))
+	./run_tests.sh -q
+endif
+
+# Files are placed by debian/pistor.install.
+override_dh_auto_install:
+
+# Mark the daemon entry point executable.
+execute_after_dh_fixperms:
+	chmod 755 debian/pistor/usr/lib/pistor/pistord.py
+
+# Install, enable and start debian/pistor.pistord.service as pistord.service.
+override_dh_installsystemd:
+	dh_installsystemd --name=pistord

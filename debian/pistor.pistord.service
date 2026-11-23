@@ -1,0 +1,13 @@
+# Copyright (c) 2024-2026 Jeff Curless
+# SPDX-License-Identifier: MIT
+[Unit]
+Description=piStor Fan Control Service
+After=boot-complete.target
+[Service]
+Type=simple
+Restart=always
+RemainAfterExit=true
+ExecStart=/usr/bin/python3 /usr/lib/pistor/pistord.py SERVICE
+ExecStopPost=/usr/bin/python3 /usr/lib/pistor/pistord.py SHUTDOWN
+[Install]
+WantedBy=multi-user.target
