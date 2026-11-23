@@ -2,6 +2,9 @@
 # Copyright (c) 2024-2026 Jeff Curless
 # SPDX-License-Identifier: MIT
 
+# Stop at the first failed command (e.g. a failed download)
+set -e
+
 echo "**********************************"
 echo " piStor Fan Control Service Setup "
 echo "**********************************"
@@ -22,25 +25,33 @@ echo "Tested on Raspberry Pi OS 12 (Bookworm)"
 #
 # Create installation directory
 #
-sudo mkdir $INSTALLATIONFOLDER
+sudo mkdir -p $INSTALLATIONFOLDER
 sudo chmod 755 $INSTALLATIONFOLDER
 
 #
 # Copy files to install area
 #
-sudo curl -L $DOWNLOADSERVER/logger.py -o $INSTALLATIONFOLDER/logger.py --silent
+sudo curl -fsSL $DOWNLOADSERVER/logger.py -o $INSTALLATIONFOLDER/logger.py
 sudo chmod 755 $INSTALLATIONFOLDER/logger.py
-sudo curl -L $DOWNLOADSERVER/configtool.py -o $INSTALLATIONFOLDER/configtool.py --silent
+sudo curl -fsSL $DOWNLOADSERVER/configtool.py -o $INSTALLATIONFOLDER/configtool.py
 sudo chmod 755 $INSTALLATIONFOLDER/configtool.py
-sudo curl -L $DOWNLOADSERVER/pistord.py -o $INSTALLATIONFOLDER/pistord.py --silent
+sudo curl -fsSL $DOWNLOADSERVER/pistord.py -o $INSTALLATIONFOLDER/pistord.py
 sudo chmod 755 $INSTALLATIONFOLDER/pistord.py
-sudo curl -L $DOWNLOADSERVER/pistor.conf -o $INSTALLROOT/pistor.conf --silent
-sudo chmod 755 $INSTALLROOT/pistor.conf
+#
+# Install the default configuration only if there isn't one already, so a
+# reinstall keeps the user's settings.
+#
+if [ -f $INSTALLROOT/pistor.conf ]; then
+    echo "Keeping existing $INSTALLROOT/pistor.conf"
+else
+    sudo curl -fsSL $DOWNLOADSERVER/pistor.conf -o $INSTALLROOT/pistor.conf
+    sudo chmod 644 $INSTALLROOT/pistor.conf
+fi
 
 #
 # Copy service to systemd area
 #
-sudo curl -L $DOWNLOADSERVER/pistord.service -o $INSTALLSERVICEFOLDER/pistord.service --silent
+sudo curl -fsSL $DOWNLOADSERVER/pistord.service -o $INSTALLSERVICEFOLDER/pistord.service
 sudo chmod 644 $INSTALLSERVICEFOLDER/pistord.service
 
 #
