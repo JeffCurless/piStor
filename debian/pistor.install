@@ -1,0 +1,4 @@
+src/pistord.py   usr/lib/pistor/
+src/configtool.py usr/lib/pistor/
+src/logger.py    usr/lib/pistor/
+src/pistor.conf  etc/

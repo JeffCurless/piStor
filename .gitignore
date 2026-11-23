@@ -1,2 +1,12 @@
 **/__pycache__
 
+
+# Debian package build output
+debian/.debhelper/
+debian/debhelper-build-stamp
+debian/files
+debian/pistor/
+debian/*.substvars
+debian/*.debhelper.log
+debian/*.debhelper
+dist/

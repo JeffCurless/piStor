@@ -1,0 +1,20 @@
+Source: pistor
+Section: misc
+Priority: optional
+Maintainer: Jeff Curless <jeff@thecurlesses.com>
+Build-Depends: debhelper-compat (= 13), python3
+Standards-Version: 4.7.0
+Homepage: https://github.com/JeffCurless/piStor
+Rules-Requires-Root: no
+
+Package: pistor
+Architecture: all
+Depends: ${misc:Depends},
+         python3 (>= 3.10),
+         python3-gpiozero,
+         python3-lgpio
+Description: PWM fan control daemon for the piStor Raspberry Pi 5 NAS
+ piStor is a NAS-style build around a Raspberry Pi 5 and a Radxa Penta Hat.
+ This package provides the pistord systemd service, which reads the CPU
+ temperature and drives a PWM fan on GPIO 13, either automatically or from
+ a temperature/speed table in /etc/pistor.conf.

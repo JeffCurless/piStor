@@ -41,7 +41,8 @@ from logger import Logger
 # Some helpful constants
 #
 
-PYSTOR_VERSION = 1.0    # Version of this service
+PYSTOR_VERSION = "1.0.1"  # Service version, "Major.Minor.Edit".  Change it with
+                        # ./build_deb.sh --bump so debian/changelog matches.
 MIN_TEMP       = 10     # Minimum temp we care about (for CPU Temperature object)
 MAX_TEMP       = 80     # Maximum temp we can let the CPU get to
 FAN_PWM_GPIO   = 13     # Fan PWM line is connected to GPIO 13 (Pin 33)

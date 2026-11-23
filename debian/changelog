@@ -1,0 +1,11 @@
+pistor (1.0.1) unstable; urgency=medium
+
+  * Version numbers now use three parts: Major.Minor.Edit.
+
+ -- Jeff Curless <jeff@thecurlesses.com>  Mon, 23 Nov 2026 18:24:19 -0500
+
+pistor (1.0) unstable; urgency=medium
+
+  * Initial Debian package of the piStor fan control service.
+
+ -- Jeff Curless <jeff@thecurlesses.com>  Mon, 23 Nov 2026 12:00:00 -0500
