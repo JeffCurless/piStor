@@ -1,118 +1,18 @@
-#
-#
-#
+# Copyright (c) 2024-2026 Jeff Curless
+# SPDX-License-Identifier: MIT
+'''
+Unit tests for src/logger.py (Logger).
+'''
 import logging
-
-#
-# Logger - A class that is used to wrap the logging class... so we can export
-#          directly to the console in debug mode, and handle any other change
-#          required
-#
-class Logger:
-    '''
-    Thin wrapper around Python's logging module for piStor.
-
-    Writes timestamped log lines to a file. Call forceConsole() to redirect
-    all output to stdout instead (used in DEBUG mode).
-    '''
-    def __init__(self,filename=None,level=logging.DEBUG):
-        '''
-        Initialize the logger.
-
-        Parameters:
-            filename - Path to the log file. Pass None to disable file logging
-                       and fall back to console print statements.
-            level    - Logging level (default: logging.DEBUG).
-        '''
-        self._logEnabled = True
-        try:
-            if filename == None:
-                self._logEnabled = False
-            else:
-                logging.basicConfig( filename=filename,
-                                     filemode='a',
-                                     level=level,
-                                     format='%(asctime)s %(process)d [%(levelname)s] %(message)s',
-                                     datefmt='%b %d %y %H:%M:%S')
-        except Exception as error:
-            print( f"Error: Could not log events due to {error}." )
-            self._logEnabled = False
-            
-    def info( self, message ):
-        '''
-        Write the message out using the info level
-        
-        Parameters:
-            message - the message to display to the destination
-
-        '''
-        if self._logEnabled:
-            logging.info( message )
-        else:
-            print( f"INFO: {message}" )
-    
-    def debug( self, message ):
-        '''
-        Write the message out using the debug level.
-
-        Parameters:
-            message - The message to log.
-        '''
-        if self._logEnabled:
-            logging.debug( message )
-        else:
-            print( f"DEBUG: {message}" )
-    
-    def warn( self, message ):
-        '''
-        Write the message out using the warn level
- 
-        Parameters:
-            message - The message to log
-
-        '''
-        if self._logEnabled:
-            logging.warning( message )
-        else:
-            print( f"WARN: {message}" )
-
-    def warning( self, message ):
-        '''
-        Write the message out using the warning level. Alias for warn().
-
-        Parameters:
-            message - The message to log.
-        '''
-        self.warn( message )
-
-    def error( self, message ):
-        '''
-        Write the message out using the error level
-
-        Parameters:
-            message - The message to log
-
-        '''
-        if self._logEnabled:
-            logging.error( message )
-        else:
-            print( f"(ERROR: {message}" )
-    
-    def forceConsole(self):
-        '''
-        This routine forces all logging messages to the console.
-        
-        '''
-        self._logEnabled = False
-#
-# 
-#
-import unittest
-import tempfile
 import os
+import tempfile
+import unittest
 from unittest.mock import patch
 
+from logger import Logger
+
 class TestLogger(unittest.TestCase):
+    '''Unit tests for Logger.'''
 
     def setUp(self):
         '''
@@ -248,11 +148,11 @@ class TestLogger(unittest.TestCase):
             mock_print.assert_called_once_with("WARN: hello")
 
     def test_error_console_prefix(self):
-        '''error() should print "(ERROR: <message>" — note the unmatched leading paren.'''
+        '''error() should print "ERROR: <message>".'''
         log = Logger(None)
         with patch('builtins.print') as mock_print:
             log.error("hello")
-            mock_print.assert_called_once_with("(ERROR: hello")
+            mock_print.assert_called_once_with("ERROR: hello")
 
     def test_console_empty_message(self):
         '''All log methods should handle an empty string message without error.'''
@@ -328,7 +228,7 @@ class TestLogger(unittest.TestCase):
             log = Logger(path)
             log.info("info test message")
             self._flush()
-            with open(path) as f:
+            with open(path, encoding='utf-8') as f:
                 self.assertIn("info test message", f.read())
         finally:
             os.unlink(path)
@@ -340,7 +240,7 @@ class TestLogger(unittest.TestCase):
             log = Logger(path)
             log.debug("debug test message")
             self._flush()
-            with open(path) as f:
+            with open(path, encoding='utf-8') as f:
                 self.assertIn("debug test message", f.read())
         finally:
             os.unlink(path)
@@ -352,7 +252,7 @@ class TestLogger(unittest.TestCase):
             log = Logger(path)
             log.warn("warn test message")
             self._flush()
-            with open(path) as f:
+            with open(path, encoding='utf-8') as f:
                 self.assertIn("warn test message", f.read())
         finally:
             os.unlink(path)
@@ -364,7 +264,7 @@ class TestLogger(unittest.TestCase):
             log = Logger(path)
             log.error("error test message")
             self._flush()
-            with open(path) as f:
+            with open(path, encoding='utf-8') as f:
                 self.assertIn("error test message", f.read())
         finally:
             os.unlink(path)
@@ -377,7 +277,7 @@ class TestLogger(unittest.TestCase):
             log.info("label check")
             log.error("error label check")
             self._flush()
-            with open(path) as f:
+            with open(path, encoding='utf-8') as f:
                 content = f.read()
             self.assertIn("[INFO]",  content)
             self.assertIn("[ERROR]", content)
@@ -388,12 +288,12 @@ class TestLogger(unittest.TestCase):
         '''Logger should open the file in append mode, preserving existing content.'''
         path = self._temp_log_path()
         try:
-            with open(path, 'w') as f:
+            with open(path, 'w', encoding='utf-8') as f:
                 f.write("pre-existing content\n")
             log = Logger(path)
             log.info("new entry")
             self._flush()
-            with open(path) as f:
+            with open(path, encoding='utf-8') as f:
                 content = f.read()
             self.assertIn("pre-existing content", content)
             self.assertIn("new entry", content)
@@ -401,7 +301,132 @@ class TestLogger(unittest.TestCase):
             os.unlink(path)
 
 
+class TestLoggerExtra(unittest.TestCase):
+    '''Additional positive and negative tests for Logger.'''
+
+    def setUp(self):
+        for h in logging.root.handlers[:]:
+            h.close()
+            logging.root.removeHandler(h)
+        self.addCleanup(self.resetLogging)
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmpdir.cleanup)
+        self.path = os.path.join(self.tmpdir.name, 'test.log')
+
+    @staticmethod
+    def resetLogging():
+        '''Remove handlers and restore the default root level.'''
+        for h in logging.root.handlers[:]:
+            h.close()
+            logging.root.removeHandler(h)
+        logging.root.setLevel(logging.WARNING)
+
+    def content(self):
+        '''Flush handlers and return the log file contents.'''
+        for h in logging.root.handlers:
+            h.flush()
+        with open(self.path, encoding='utf-8') as f:
+            return f.read()
+
+    # ---- positive
+
+    def test_level_filters_lower_messages(self):
+        '''With level=WARNING, info and debug messages are not written.'''
+        log = Logger(self.path, level=logging.WARNING)
+        log.debug("dbg-msg")
+        log.info("info-msg")
+        log.warn("warn-msg")
+        text = self.content()
+        self.assertNotIn("dbg-msg", text)
+        self.assertNotIn("info-msg", text)
+        self.assertIn("warn-msg", text)
+
+    def test_warning_level_label(self):
+        '''warn() entries are labelled [WARNING] in the file.'''
+        Logger(self.path).warn("w")
+        self.assertIn("[WARNING] w", self.content())
+
+    def test_debug_written_at_default_level(self):
+        '''The default level is DEBUG, so debug messages are written.'''
+        Logger(self.path).debug("debug-default")
+        self.assertIn("[DEBUG] debug-default", self.content())
+
+    def test_line_contains_process_id(self):
+        '''Each line includes the process id.'''
+        Logger(self.path).info("pid check")
+        self.assertIn(f" {os.getpid()} [INFO]", self.content())
+
+    def test_non_string_message(self):
+        '''Non-string messages (numbers, lists) are logged via str().'''
+        log = Logger(self.path)
+        log.info(42)
+        log.info([1, 2])
+        text = self.content()
+        self.assertIn("42", text)
+        self.assertIn("[1, 2]", text)
+
+    def test_multiple_loggers_share_file(self):
+        '''A second Logger reuses the first one's file (basicConfig is global).'''
+        first = Logger(self.path)
+        other = os.path.join(self.tmpdir.name, 'other.log')
+        second = Logger(other)
+        second.info("from second")
+        first.info("from first")
+        text = self.content()
+        self.assertIn("from second", text)
+        self.assertIn("from first", text)
+        self.assertFalse(os.path.exists(other))
+
+    def test_console_mode_writes_nothing_to_file(self):
+        '''After forceConsole() nothing more is written to the file.'''
+        log = Logger(self.path)
+        log.info("before")
+        log.forceConsole()
+        with patch('builtins.print'):
+            log.info("after")
+        text = self.content()
+        self.assertIn("before", text)
+        self.assertNotIn("after", text)
+
+    # ---- negative
+
+    def test_directory_as_filename_disables_logging(self):
+        '''A directory path cannot be opened as a log file.'''
+        with patch('builtins.print') as mock_print:
+            log = Logger(self.tmpdir.name)
+        self.assertFalse(log._logEnabled)
+        self.assertIn("Could not log events", mock_print.call_args.args[0])
+
+    def test_unwritable_file_disables_logging(self):
+        '''A read-only log file falls back to console output.'''
+        with open(self.path, 'w', encoding='utf-8'):
+            pass
+        os.chmod(self.path, 0o400)
+        if os.access(self.path, os.W_OK):
+            self.skipTest("running as root; file is still writable")
+        with patch('builtins.print'):
+            log = Logger(self.path)
+        self.assertFalse(log._logEnabled)
+
+    def test_invalid_level_disables_logging(self):
+        '''An unknown level name is reported and falls back to the console.'''
+        with patch('builtins.print') as mock_print:
+            log = Logger(self.path, level="NOT_A_LEVEL")
+        self.assertFalse(log._logEnabled)
+        self.assertIn("Could not log events", mock_print.call_args.args[0])
+
+    def test_logging_error_does_not_raise(self):
+        '''If a message cannot be formatted, logging reports it and does not raise.'''
+        log = Logger(self.path)
+
+        class Unprintable:  # pylint: disable=too-few-public-methods
+            '''Object whose str() fails.'''
+            def __str__(self):
+                raise RuntimeError("no str")
+
+        with patch('sys.stderr'):
+            log.info(Unprintable())
+
+
 if __name__ == "__main__":
     unittest.main()
-
-

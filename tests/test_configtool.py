@@ -1,127 +1,19 @@
+# Copyright (c) 2024-2026 Jeff Curless
+# SPDX-License-Identifier: MIT
 '''
-Configuration reader for the piStor fan control daemon.
-
-Wraps Python's configparser to load and expose settings from
-/etc/pistor.conf (or an alternate path). See piStorConfig for details.
+Unit tests for src/configtool.py (piStorConfig).
 '''
 import os
-import configparser
-
-AUTO_FAN = 1
-MANUAL_FAN = 0
-
-class piStorConfig():
-    def __init__( self, filename : str ="" ):
-        '''
-        Initialize the configuration object.
-
-        Parameters:
-            filename - Path to the config file. If non-empty, loadConfig() is
-                       called automatically during initialization.
-        '''
-        self.filename  = filename
-        self.configObj = configparser.ConfigParser()
-        if filename != "":
-            self.loadConfig( filename )
-    
-    def loadConfig( self, filename : str ):
-        '''
-        Load the configuration file into memory.
-
-        Parameters:
-            filename - Path to the .conf file to read.
-
-        Raises:
-            FileNotFoundError - if the file does not exist (caught internally
-                                and printed; the config object remains empty).
-        '''
-        try:
-            if os.path.isfile( filename ):
-                self.configObj.read( filename )
-                self.filename = filename
-            else:
-                raise FileNotFoundError( f"Configuration file {filename} does not exist." )
-        except Exception as error:
-            print( f"Error: {error}" )
-            
-    def __iter__( self ):
-        '''
-        Make this configuration object iterable.  Iterations occur on the
-        sections of the configuration file
-        '''
-        self.index = 0
-        self.sections = self.configObj.sections()
-        return self
-    
-    def __next__( self ) -> str:
-        '''
-        This routine returns the next item in the sections list, or a
-        stop iteration exception if we have no more sections.
-        
-        Returns:
-            the name of the next section
-        '''
-        if self.index < len(self.sections ):
-            index = self.index
-            self.index += 1
-            return self.sections[index]
-        else:
-            raise StopIteration()
-        
-    def getFanSpeed( self ) -> list[tuple[int,int]]:
-        '''
-        This member function returns a list of tuples.  The first paramter is
-        the CPU temperature, the second parameter of the tuple is the fan speed.
-        
-        If there is no FanSpeeds section in the configuration file, a default
-        value is returned, which essentially sets the fan speed to 100%
-        
-        Returns:
-            A list of tuples used for controlling the fan speed...
-        '''
-        speeds = []
-        try:
-            for item in self.configObj['FanSpeeds']:
-                temp = int(item)
-                speed = int(self.configObj['FanSpeeds'][item])
-                speeds.append( (temp,speed) )
-        except Exception as error:
-            print( f"Error: No section in configuration file named {error}" )
-            speeds = [(20,0),(30,100)]
-
-        return speeds
-    
-    def getMode( self ) -> int:
-        '''
-        This function obtains the fan mode from the configuration file.  If there
-        is any issue obtaining the fan mode, automatic mode is selected.
-        
-        Mode Values:
-            0 - Manual mode.  Utilize the fanspeed list to determine the fan
-                speed based on the CPU temperature.
-            1 - Automatic mode.  Modify the fan speed based on CPU temperature,
-                no table is selected.
-                
-        Automatic mode is usually better, however if the system is running in a
-        high temperature area, or there are additional factors not realted to CPU
-        temperature, manual mode can be used to intensify, or decrease the overall
-        fan speed.
-        
-        Returns:
-            An integer representing the mode we are in.
-        '''
-        mode = 1
-        try:
-            mode = self.configObj.getint('mode','autofan')
-        except Exception as error:
-            print( f"Error: Could not locate key {error}" )
-        return mode
-        
-
-import unittest
 import tempfile
+import unittest
+from contextlib import redirect_stdout
+import io
+
+from configtool import AUTO_FAN, MANUAL_FAN, piStorConfig
+from tests import SRC
 
 class TestPiStorConfig(unittest.TestCase):
+    '''Unit tests for piStorConfig.'''
 
     # ------------------------------------------------------------------ helpers
 
@@ -133,6 +25,7 @@ class TestPiStorConfig(unittest.TestCase):
         return f.name
 
     def _remove(self, path):
+        '''Delete path if it exists.'''
         if os.path.exists(path):
             os.unlink(path)
 
@@ -184,7 +77,7 @@ class TestPiStorConfig(unittest.TestCase):
         self.assertEqual(config.configObj.sections(), [])
 
     def test_loadconfig_can_reload_different_file(self):
-        '''Calling loadConfig a second time on a new file replaces the config.'''
+        '''Calling loadConfig a second time merges the new file, overriding existing values.'''
         path1 = self._make_conf("[mode]\nautofan = 1\n")
         path2 = self._make_conf("[mode]\nautofan = 0\n")
         try:
@@ -373,6 +266,138 @@ class TestPiStorConfig(unittest.TestCase):
             self.assertEqual(sections, ['mode'])
         finally:
             self._remove(path)
+
+
+class TestPiStorConfigExtra(unittest.TestCase):
+    '''Additional positive and negative tests for piStorConfig.'''
+
+    def setUp(self):
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmpdir.cleanup)
+        self.out = io.StringIO()
+        self.enterContext(redirect_stdout(self.out))
+
+    def conf(self, content):
+        '''Write content to a config file in the temp directory and return its path.'''
+        path = os.path.join(self.tmpdir.name, 'test.conf')
+        with open(path, 'w', encoding='utf-8') as f:
+            f.write(content)
+        return path
+
+    # ---- positive
+
+    def test_bundled_template_parses(self):
+        '''The repository's pistor.conf template loads with the expected values.'''
+        config = piStorConfig(os.path.join(SRC, 'pistor.conf'))
+        self.assertEqual(config.getMode(), AUTO_FAN)
+        table = config.getFanSpeed()
+        self.assertEqual(table[0], (20, 0))
+        self.assertEqual(table[-1], (70, 100))
+        self.assertEqual(table, sorted(table))
+        self.assertEqual(self.out.getvalue(), "")
+
+    def test_comment_lines_ignored(self):
+        '''Lines starting with # or ; are comments.'''
+        config = piStorConfig(self.conf("# header\n; note\n[mode]\n# c\nautofan = 0\n"))
+        self.assertEqual(config.getMode(), MANUAL_FAN)
+
+    def test_indented_keys_and_spaces(self):
+        '''Indented keys and spaces around values are accepted.'''
+        config = piStorConfig(self.conf("[mode]\n   autofan   =   0  \n"))
+        self.assertEqual(config.getMode(), MANUAL_FAN)
+
+    def test_colon_separator(self):
+        '''configparser also accepts ":" as a separator.'''
+        config = piStorConfig(self.conf("[FanSpeeds]\n40: 50\n"))
+        self.assertEqual(config.getFanSpeed(), [(40, 50)])
+
+    def test_option_names_case_insensitive(self):
+        '''Option names are case-insensitive.'''
+        config = piStorConfig(self.conf("[mode]\nAUTOFAN = 0\n"))
+        self.assertEqual(config.getMode(), MANUAL_FAN)
+
+    def test_negative_temperature_threshold(self):
+        '''Negative temperatures are valid integers.'''
+        config = piStorConfig(self.conf("[FanSpeeds]\n-10 = 0\n"))
+        self.assertEqual(config.getFanSpeed(), [(-10, 0)])
+
+    def test_nested_iteration_is_independent(self):
+        '''Nested loops over the same config do not interfere.'''
+        config = piStorConfig(self.conf("[a]\n[b]\n"))
+        pairs = [(x, y) for x in config for y in config]
+        self.assertEqual(pairs, [('a', 'a'), ('a', 'b'), ('b', 'a'), ('b', 'b')])
+
+    def test_iter_returns_new_iterator(self):
+        '''iter() returns a fresh iterator each time.'''
+        config = piStorConfig(self.conf("[a]\n"))
+        self.assertIsNot(iter(config), iter(config))
+
+    # ---- negative
+
+    def test_section_names_case_sensitive(self):
+        '''[fanspeeds] is not [FanSpeeds]: the default table is returned.'''
+        config = piStorConfig(self.conf("[fanspeeds]\n40 = 50\n"))
+        self.assertEqual(config.getFanSpeed(), [(20, 0), (30, 100)])
+
+    def test_float_temperature_key_returns_default(self):
+        '''A non-integer temperature such as 20.5 is rejected.'''
+        config = piStorConfig(self.conf("[FanSpeeds]\n20.5 = 50\n"))
+        self.assertEqual(config.getFanSpeed(), [(20, 0), (30, 100)])
+
+    def test_percent_sign_value_returns_default(self):
+        '''A value like "50%" is rejected (and must not crash interpolation).'''
+        config = piStorConfig(self.conf("[FanSpeeds]\n40 = 50%\n"))
+        self.assertEqual(config.getFanSpeed(), [(20, 0), (30, 100)])
+
+    def test_missing_value_returns_default(self):
+        '''A key with an empty value is rejected.'''
+        config = piStorConfig(self.conf("[FanSpeeds]\n40 =\n"))
+        self.assertEqual(config.getFanSpeed(), [(20, 0), (30, 100)])
+
+    def test_boolean_mode_value_defaults_to_auto(self):
+        '''autofan = true is not an integer, so automatic mode is used.'''
+        config = piStorConfig(self.conf("[mode]\nautofan = true\n"))
+        self.assertEqual(config.getMode(), AUTO_FAN)
+        self.assertIn("Error", self.out.getvalue())
+
+    def test_missing_section_header_does_not_raise(self):
+        '''A file with no [section] header is reported, not raised.'''
+        config = piStorConfig(self.conf("autofan = 0\n"))
+        self.assertEqual(config.configObj.sections(), [])
+        self.assertEqual(config.getMode(), AUTO_FAN)
+        self.assertIn("Error", self.out.getvalue())
+
+    def test_duplicate_option_does_not_raise(self):
+        '''A duplicated key is reported, not raised.'''
+        piStorConfig(self.conf("[FanSpeeds]\n40 = 10\n40 = 20\n"))
+        self.assertIn("Error", self.out.getvalue())
+
+    def test_duplicate_section_does_not_raise(self):
+        '''A duplicated section is reported, not raised.'''
+        piStorConfig(self.conf("[mode]\nautofan = 1\n[mode]\nautofan = 0\n"))
+        self.assertIn("Error", self.out.getvalue())
+
+    def test_directory_path_treated_as_missing(self):
+        '''A directory path is not a file and is reported as missing.'''
+        config = piStorConfig(self.tmpdir.name)
+        self.assertEqual(config.configObj.sections(), [])
+        self.assertIn("does not exist", self.out.getvalue())
+
+    def test_missing_file_keeps_previous_filename(self):
+        '''A failed load does not change the stored filename.'''
+        path = self.conf("[mode]\nautofan = 1\n")
+        config = piStorConfig(path)
+        config.loadConfig(os.path.join(self.tmpdir.name, 'nope.conf'))
+        self.assertEqual(config.filename, path)
+        self.assertEqual(config.getMode(), AUTO_FAN)
+
+    def test_binary_file_does_not_raise(self):
+        '''A file that is not valid UTF-8 text is reported, not raised.'''
+        path = os.path.join(self.tmpdir.name, 'bin.conf')
+        with open(path, 'wb') as f:
+            f.write(b"\xff\xfe\x00[mode]\x00")
+        piStorConfig(path)
+        self.assertIn("Error", self.out.getvalue())
 
 
 if __name__ == "__main__":

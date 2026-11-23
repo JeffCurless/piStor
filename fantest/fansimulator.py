@@ -1,14 +1,24 @@
+# Copyright (c) 2024-2026 Jeff Curless
+# SPDX-License-Identifier: MIT
 '''
 Hardware simulator for testing piStor fan control logic without real GPIO.
 
 Provides BoardSimulator, which mimics a Raspberry Pi board by returning
 simulated CPU temperatures (affected by fan speed) and recording fan speed
 calls. Module-level functions (getCPUTemp, setFanSpeed, startTest, stopTest)
-wrap a global BoardSimulator instance for drop-in compatibility with pistord.py.
+wrap a global BoardSimulator instance so test scripts can call them directly.
+
+Run directly to execute a simple 150-pass threshold control demo.
 '''
 import time
 
+AMBIENT_TEMP = 20   # The fan cannot cool the CPU below room temperature (°C)
+
 class BoardSimulator():
+    '''
+    Simulated board that models CPU temperature over time and the cooling
+    effect of the fan, optionally recording temperatures to a CSV file.
+    '''
     def __init__( self ):
         '''
         Initialize the board simulator with default profiles and state.
@@ -20,7 +30,8 @@ class BoardSimulator():
             _cpuProfile    - List of (call_count, base_temp) pairs that model
                              how CPU temperature evolves over time.
             _fanProfile    - List of (fan_speed, temp_reduction) pairs that model
-                             the cooling effect of the fan.
+                             the cooling effect of the fan.  The last entry
+                             (1.0) applies at full speed.
             _fanSpeed      - Current fan speed (0.0-1.0).
             _testName      - Name of the active test run.
             _recordData    - Whether temperature readings are written to file.
@@ -35,7 +46,7 @@ class BoardSimulator():
         self._testName      = "nothing"
         self._recordData    = False
         self._file          = None
-        
+
     def resetSystem(self):
         '''
         Reset temperature, temp call counter, and fan call counter to zero.
@@ -43,13 +54,14 @@ class BoardSimulator():
         self._currentTemp   = 0
         self._tempCallCount = 0
         self._fanCallCount  = 0
-        
+
     def getValueFromProfile( self, key, profile ):
         '''
-        Look up a value from a sorted range profile.
+        Look up a value from a sorted step profile.
 
-        Scans the profile list and returns the value associated with the range
-        that contains key. A range [prev[0], next[0]) returns prev[1].
+        Each entry applies from its start up to (but not including) the next
+        entry's start; the last entry applies to every key at or above its
+        start.
 
         Parameters:
             key     - The lookup key (e.g. call count or fan speed).
@@ -57,16 +69,16 @@ class BoardSimulator():
                       by range_start.
 
         Returns:
-            The value for the matching range, or 0 if no range matches.
+            The value of the last entry whose start is <= key, or 0 if key is
+            below the first entry (or the profile is empty).
         '''
-        prev = profile[0]
-        for next in profile[1:]:
-            if key >= prev[0] and key < next[0]:
-                return prev[1]
-            else:
-                prev = next
-        return 0
-    
+        value = 0
+        for start, entryValue in profile:
+            if key < start:
+                break
+            value = entryValue
+        return value
+
     def recordData( self, data ):
         '''
         Write a data value to the output file if recording is enabled.
@@ -76,26 +88,27 @@ class BoardSimulator():
         '''
         if self._recordData:
             self._file.write( f"{data}," )
-    
+
     def getCPUTemp(self):
         '''
         Return the simulated CPU temperature for the current call iteration.
 
         Increments the temp call counter, looks up the base temperature from
         _cpuProfile using the counter, then subtracts the cooling reduction from
-        _fanProfile based on the current fan speed. The result is stored in
-        _currentTemp, recorded to file if recording is active, and returned.
+        _fanProfile based on the current fan speed.  The result never drops
+        below AMBIENT_TEMP.  It is stored in _currentTemp, recorded to file if
+        recording is active, and returned.
 
         Returns:
-            Simulated CPU temperature in degrees Celsius (float).
+            Simulated CPU temperature in degrees Celsius.
         '''
         self._tempCallCount += 1
         cputemp   = self.getValueFromProfile( self._tempCallCount, self._cpuProfile )
         reduction = self.getValueFromProfile( self._fanSpeed, self._fanProfile )
-        self._currentTemp = cputemp - reduction
+        self._currentTemp = max( cputemp - reduction, AMBIENT_TEMP )
         self.recordData( self._currentTemp )
         return self._currentTemp
-    
+
     def setFanSpeed( self, speed ):
         '''
         Set the simulated fan speed and increment the fan call counter.
@@ -111,7 +124,7 @@ class BoardSimulator():
         else:
             self._fanCallCount += 1
             self._fanSpeed = speed
-            
+
     def startNamedTest( self, name ):
         '''
         Begin a named test run, resetting system state and writing a row header.
@@ -124,43 +137,45 @@ class BoardSimulator():
         self.resetSystem()
         if self._recordData:
             self._file.write( f"\n{self._testName}," )
-        
+
     def generateBaseline(self, count = 150):
         '''
         Generate a baseline temperature dataset with no fan intervention.
 
-        Writes a 'baseline' row header to the data file, then calls getCPUTemp()
-        `count` times with the fan at its current (default) speed.
+        Writes a 'baseline' row header to the data file, then reads this
+        simulator's temperature `count` times with the fan at its current
+        speed.  A data file must already be open.
 
         Parameters:
             count - Number of temperature samples to collect (default: 150).
         '''
         self._testName = 'baseline'
         self._file.write( f"\n{self._testName},")
-        for i in range(count):
-            getCPUTemp()
-    
+        for _ in range(count):
+            self.getCPUTemp()
+
     def createDataFile( self, filename ):
         '''
-        Open a CSV data file for appending and enable data recording.
+        Open a CSV data file for appending and enable data recording.  If the
+        file cannot be opened, an error is printed and recording stays off.
 
         Parameters:
             filename - Path to the output file. Opened in append mode so
                        multiple test runs can be stored in the same file.
         '''
         try:
-            self._file = open( filename, 'a' )
+            self._file = open( filename, 'a', encoding='utf-8' )
             self._recordData = True
             #self.generateBaseline()
         except Exception as error:
             print( f"Error trying to create data file {filename}.  Error {error}" )
-            
+
     def closeFile( self ):
         '''
         Close the data recording file.
         '''
         self._file.close()
-        
+
 sim = BoardSimulator()
 
 def getCPUTemp():
@@ -201,4 +216,3 @@ if __name__ == "__main__":
         print( f"Pass {i} CPU {temp} Fan {fanSpeed}" )
         setFanSpeed( fanSpeed )
         time.sleep(0.5)
-    

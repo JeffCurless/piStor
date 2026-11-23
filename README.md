@@ -95,7 +95,7 @@ The configuration file is installed at `/etc/pistor.conf`. If the file is missin
 
 ### Running Locally
 
-The daemon can be run directly from the command line for testing:
+The daemon can be run directly from the command line for testing (from the `src/` directory):
 
 ```bash
 # Print version
@@ -109,6 +109,16 @@ python3 pistord.py SERVICE
 
 # Signal shutdown
 python3 pistord.py SHUTDOWN
+```
+
+## Running the Tests
+
+The unit tests live in `tests/` and use Python's built-in `unittest`. All GPIO hardware is mocked, so they run on any machine with Python 3.11+:
+
+```bash
+./run_tests.sh                       # run every test (verbose)
+./run_tests.sh -q                    # summary only
+./run_tests.sh tests.test_pistord    # run one module
 ```
 
 ## Work that needs to be completed
@@ -126,3 +136,9 @@ python3 pistord.py SHUTDOWN
 
 > [!NOTE]
 > This code is currently only supported on 64 bit Raspberry PI OS.  There is not current plan to make it operational on any other OS at this time.
+
+## License
+
+This project is licensed under the MIT License. See [LICENSE](LICENSE) for details.
+
+Copyright (c) 2024-2026 Jeff Curless
