@@ -1,11 +1,13 @@
 #!/bin/bash
+# Copyright (c) 2024-2026 Jeff Curless
+# SPDX-License-Identifier: MIT
 
 echo "**********************************"
 echo " piStor Fan Control Service Setup "
 echo "**********************************"
 
 # Helper variables
-DOWNLOADSERVER=https://raw.githubusercontent.com/JeffCurless/piStor/main/
+DOWNLOADSERVER=https://raw.githubusercontent.com/JeffCurless/piStor/main/src
 INSTALLROOT=/etc
 INSTALLATIONFOLDER=$INSTALLROOT/pistor
 INSTALLSERVICEFOLDER=/lib/systemd/system
@@ -39,7 +41,7 @@ sudo chmod 755 $INSTALLROOT/pistor.conf
 # Copy service to systemd area
 #
 sudo curl -L $DOWNLOADSERVER/pistord.service -o $INSTALLSERVICEFOLDER/pistord.service --silent
-sudo chmod 644 $INSTALLSERICEFOLDER/pistord.service
+sudo chmod 644 $INSTALLSERVICEFOLDER/pistord.service
 
 #
 # Start service
