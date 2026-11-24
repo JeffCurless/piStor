@@ -201,10 +201,10 @@ The daemon can be run directly from the command line for testing (from the `src/
 # Print version (e.g. "Version: 1.1.2")
 python3 pistord.py VERSION
 
-# Run fan control in the foreground with console logging (no thread spawned)
+# Run fan control in the foreground with console logging (Ctrl-C turns the fan off)
 python3 pistord.py DEBUG
 
-# Start as a background thread (normal service mode)
+# Normal service mode (run by systemd; SIGTERM turns the fan off)
 python3 pistord.py SERVICE
 
 # Signal shutdown

@@ -13,11 +13,15 @@ The control mode comes from /etc/pistor.conf (automatic if the file is
 missing) and messages are logged to /var/log/piStord.log.
 
 CLI arguments:
-  SERVICE   - Start the fan control daemon in a background thread.
+  SERVICE   - Run the fan control daemon (in the foreground, under systemd).
   SHUTDOWN  - Set the fan speed to zero and exit.  Run by systemd
               (ExecStopPost) after the service stops.
   VERSION   - Print the daemon version number.
   DEBUG     - Run fan control in the foreground, logging to console.
+
+SIGTERM, SIGINT and SIGHUP stop fan control and turn the fan off.  The fan
+PWM line is left driven low when the process exits (see releaseFanLow), because
+4-pin fans pull an undriven (input) PWM line high, which runs them at 100%.
 
 Requires the gpiozero library (sudo pip3 install gpiozero).
 '''
@@ -30,10 +34,10 @@ Requires the gpiozero library (sudo pip3 install gpiozero).
 import glob
 import os
 import re
+import signal
 import sys
 import time
 from collections.abc import Callable
-from threading import Thread
 
 from gpiozero import CPUTemperature, PWMOutputDevice
 
@@ -74,6 +78,34 @@ LOG_PATH    = '/var/log/piStord.log'
 # main entry point replaces it with a file logger.
 #
 log = Logger(None)
+
+SHUTDOWN_SIGNALS = ( signal.SIGTERM, signal.SIGINT, signal.SIGHUP )
+
+class ShutdownRequested( BaseException ):
+    '''
+    Raised by the signal handler to stop the fan control loop.  Derives from
+    BaseException so the loop's "except Exception" error handling cannot
+    swallow it.
+    '''
+
+def onShutdownSignal( signum: int, _frame: object ) -> None:
+    '''
+    Signal handler for SHUTDOWN_SIGNALS: raise ShutdownRequested.
+
+    Parameters:
+        signum - The signal number received.
+        _frame - The interrupted stack frame (unused).
+    '''
+    raise ShutdownRequested( signal.Signals( signum ).name )
+
+def installSignalHandlers() -> None:
+    '''
+    Make SHUTDOWN_SIGNALS stop fan control (raise ShutdownRequested) instead
+    of killing the process without cleanup.  Must be called from the main
+    thread.
+    '''
+    for sig in SHUTDOWN_SIGNALS:
+        signal.signal( sig, onShutdownSignal )
 
 def findHeaderGPIOChip() -> tuple[int, str] | None:
     '''
@@ -198,6 +230,64 @@ def setupFan(fanPWMGPIO: int) -> PWMOutputDevice:
 
     return fan
 
+def driveLineLow( gpio: int ) -> bool:
+    '''
+    Claim a header GPIO as an output driven low, then release it.
+
+    Releasing a line through the kernel leaves it driving its last level, so
+    the pin stays low after this process exits.  (gpiozero instead resets
+    pins it closes to inputs.)
+
+    Parameters:
+        gpio - The BCM GPIO number.
+
+    Returns:
+        True if the line was driven low, False if lgpio or the header gpiochip
+        is unavailable or the line could not be claimed (the reason is logged).
+    '''
+    header = findHeaderGPIOChip()
+    if header is None:
+        log.warning( f"Could not find the GPIO header gpiochip to drive GPIO {gpio} low." )
+        return False
+    chip, _ = header
+    try:
+        import lgpio  # pylint: disable=import-outside-toplevel
+        handle = lgpio.gpiochip_open( chip )
+        try:
+            lgpio.gpio_claim_output( handle, gpio, 0 )
+        finally:
+            lgpio.gpiochip_close( handle )
+    except Exception as error:  # pylint: disable=broad-exception-caught
+        log.warning( f"Could not drive GPIO {gpio} low, Error: {error}" )
+        return False
+    return True
+
+def releaseFanLow( fan: PWMOutputDevice, fanPWMGPIO: int ) -> bool:
+    '''
+    Turn the fan off and leave its PWM line driven low after this process
+    exits.
+
+    gpiozero resets the pins it closes (including at interpreter exit) to
+    inputs with no pull.  4-pin fans pull an undriven PWM line high (an
+    internal pull-up), which runs the fan at 100%, so after setting the speed to zero the
+    gpiozero device and its pin factory are closed, and the line is then
+    claimed as a low output and released (driveLineLow).  The fan may briefly
+    see a high level between those two steps.
+
+    Parameters:
+        fan        - The fan's PWMOutputDevice (closed by this call).
+        fanPWMGPIO - GPIO the fan PWM line is connected to.
+
+    Returns:
+        True if the PWM line was left driven low, False otherwise.
+    '''
+    fan.value = 0
+    factory = getattr( fan, 'pin_factory', None )
+    fan.close()
+    if factory is not None:
+        factory.close()     # Stops gpiozero resetting the pin again at exit
+    return driveLineLow( fanPWMGPIO )
+
 def newCPUTemperature( pinFactory: object | None = None ) -> CPUTemperature:
     '''
     Create a CPUTemperature object.
@@ -251,6 +341,10 @@ def runFanLoop( computeSpeed: Callable[[CPUTemperature], float],
     recovery is logged when it clears.  If the fan PWM device itself cannot be
     created, the error is logged and the loop is not started.
 
+    The loop ends on ShutdownRequested (a shutdown signal) or
+    KeyboardInterrupt: the fan is turned off with releaseFanLow() and the
+    function returns.
+
     Parameters:
         computeSpeed - Function mapping a CPUTemperature object to a fan duty
                        cycle in the range 0.0-1.0.
@@ -266,27 +360,34 @@ def runFanLoop( computeSpeed: Callable[[CPUTemperature], float],
 
     count = 0
     failing = False
-    while True:
+    try:
+        while True:
+            try:
+                if cpuTemp is None:
+                    cpuTemp = newCPUTemperature( pinFactory )
+                if (count % LOG_INTERVAL) == 0:
+                    if fan.value >= 1.0:
+                        log.warning( f"Temperature at {cpuTemp.temperature} fan running at 100%." )
+                    log.debug( f"CPU {cpuTemp.temperature} fan: {fan.value:.2f} "
+                               f"cpu.value {cpuTemp.value:.2f}" )
+                fan.value = computeSpeed( cpuTemp )
+                if failing:
+                    log.info( "Fan speed processing recovered." )
+                    failing = False
+            except Exception as error:  # pylint: disable=broad-exception-caught
+                fan.value = 1.0
+                if not failing:
+                    log.error( f"An error occurred during fan speed processing, running fan "
+                               f"at 100%. Error is {error}" )
+                    failing = True
+            time.sleep( UPDATE_PERIOD )
+            count += 1
+    except ( ShutdownRequested, KeyboardInterrupt ) as reason:
+        log.info( f"Fan control stopping ({reason or 'interrupted'}), turning the fan off." )
         try:
-            if cpuTemp is None:
-                cpuTemp = newCPUTemperature( pinFactory )
-            if (count % LOG_INTERVAL) == 0:
-                if fan.value >= 1.0:
-                    log.warning( f"Temperature at {cpuTemp.temperature} fan running at 100%." )
-                log.debug( f"CPU {cpuTemp.temperature} fan: {fan.value:.2f} "
-                           f"cpu.value {cpuTemp.value:.2f}" )
-            fan.value = computeSpeed( cpuTemp )
-            if failing:
-                log.info( "Fan speed processing recovered." )
-                failing = False
+            releaseFanLow( fan, fanPWMGPIO )
         except Exception as error:  # pylint: disable=broad-exception-caught
-            fan.value = 1.0
-            if not failing:
-                log.error( f"An error occurred during fan speed processing, running fan "
-                           f"at 100%. Error is {error}" )
-                failing = True
-        time.sleep( UPDATE_PERIOD )
-        count += 1
+            log.error( f"Could not turn off fan, Error: {error}" )
 
 def autoFanSpeed( cpuTemp: CPUTemperature ) -> float:
     '''
@@ -409,14 +510,15 @@ def turnOffFan() -> None:
     '''
     Set the fan speed to zero. Called when the SHUTDOWN CLI argument is used.
     Uses the fan PWM GPIO from /etc/pistor.conf, so it stops the same fan the
-    service drives.
+    service drives, and leaves the PWM line driven low after exit
+    (releaseFanLow).
 
     Any GPIO errors are logged but not raised.
     '''
     try:
         fanPWMGPIO, _ = getGPIOConfig()
         fan = setupFan( fanPWMGPIO )
-        fan.value = 0
+        releaseFanLow( fan, fanPWMGPIO )
     except Exception as error:  # pylint: disable=broad-exception-caught
         log.error( f"Could not turn off fan, Error: {error}" )
 
@@ -430,7 +532,7 @@ def usage() -> None:
            "the service." )
     print( "    SERVICE     - Launch the pistord Daemon so we can control the fan." )
     print( "    VERSION     - Report the version of the piStor Daemon." )
-    print( "    DEBUG       - Launches the fan control without spawning a thread." )
+    print( "    DEBUG       - Launches the fan control, logging to the console." )
 
 #
 # Main entry point
@@ -446,17 +548,17 @@ if __name__ == "__main__":
                 turnOffFan()
 
             case "SERVICE":
-                try:
-                    log.info( f"piStor Fan Service starting... Version {PYSTOR_VERSION}." )
-                    thread1 = Thread(target = startFanControl )
-                    thread1.start()
-                except Exception as error:  # pylint: disable=broad-exception-caught
-                    log.error( f"Could not start service threads, Error {error}" )
+                # Runs in the main thread: Python only delivers signals there,
+                # and the signal handlers are what turn the fan off on stop.
+                log.info( f"piStor Fan Service starting... Version {PYSTOR_VERSION}." )
+                installSignalHandlers()
+                startFanControl()
 
             case "VERSION":
                 print( f"Version: {PYSTOR_VERSION}" )
             case "DEBUG":
                 log.forceConsole()
+                installSignalHandlers()
                 startFanControl()
             case _:
                 usage()

@@ -25,6 +25,7 @@ PISTORD_PATH = os.path.join( SRC, 'pistord.py' )
 
 # Real implementations, saved before PistordTestCase patches them out.
 REAL_GET_PIN_FACTORY = pistord.getPinFactory
+REAL_DRIVE_LINE_LOW   = pistord.driveLineLow
 
 
 class StopLoop( BaseException ):
@@ -42,6 +43,11 @@ class FakeFan:  # pylint: disable=too-few-public-methods
         self.kwargs  = kwargs
         self.history = []
         self._value  = 0.0
+        self.closed  = False
+
+    def close( self ):
+        '''Mark the device closed.'''
+        self.closed = True
 
     @property
     def value( self ):
@@ -104,6 +110,9 @@ class PistordTestCase( unittest.TestCase ):
         factory = patch.object( pistord, 'getPinFactory', return_value=None )
         self.getPinFactory = factory.start()
         self.addCleanup( factory.stop )
+        lineLow = patch.object( pistord, 'driveLineLow', return_value=True )
+        self.driveLineLow = lineLow.start()
+        self.addCleanup( lineLow.stop )
 
     def errorMessages( self ):
         '''Return all messages passed to log.error().'''
@@ -732,6 +741,95 @@ class TestStartFanControl( PistordTestCase ):
         self.controlFanAuto.assert_called_once()
 
 
+# ---------------------------------------------------------------------- shutdown handling
+
+class TestShutdownHandling( PistordTestCase ):
+    '''Tests for signal handling, releaseFanLow() and driveLineLow().'''
+
+    def test_signal_handler_raises_shutdown_requested(self):
+        '''The signal handler raises ShutdownRequested naming the signal.'''
+        with self.assertRaises( pistord.ShutdownRequested ) as ctx:
+            pistord.onShutdownSignal( pistord.signal.SIGTERM, None )
+        self.assertEqual( str( ctx.exception ), 'SIGTERM' )
+
+    def test_install_signal_handlers(self):
+        '''SIGTERM, SIGINT and SIGHUP are all routed to onShutdownSignal.'''
+        with patch.object( pistord.signal, 'signal' ) as sig:
+            pistord.installSignalHandlers()
+        self.assertEqual( { c.args[0] for c in sig.call_args_list },
+                          { pistord.signal.SIGTERM, pistord.signal.SIGINT,
+                            pistord.signal.SIGHUP } )
+        for c in sig.call_args_list:
+            self.assertIs( c.args[1], pistord.onShutdownSignal )
+
+    def test_release_fan_low(self):
+        '''releaseFanLow zeroes the fan, closes it and its factory, drives the line low.'''
+        fan = FakeFan()
+        fan.value = 0.8
+        fan.pin_factory = MagicMock()
+        self.assertTrue( pistord.releaseFanLow( fan, 12 ) )
+        self.assertEqual( fan.value, 0 )
+        self.assertTrue( fan.closed )
+        fan.pin_factory.close.assert_called_once()
+        self.driveLineLow.assert_called_once_with( 12 )
+
+    def runLoopUntil( self, exc ):
+        '''Run runFanLoop on GPIO 12 with sleep raising exc; return the fan.'''
+        fan = FakeFan()
+        with patch.object( pistord, 'PWMOutputDevice', return_value=fan ), \
+             patch.object( pistord, 'CPUTemperature', return_value=FakeSensor() ), \
+             patch.object( pistord.time, 'sleep', side_effect=exc ):
+            pistord.runFanLoop( lambda s: 0.6, 12 )
+        return fan
+
+    def test_loop_turns_fan_off_on_shutdown_signal(self):
+        '''A shutdown signal ends the loop and leaves the fan off.'''
+        fan = self.runLoopUntil( pistord.ShutdownRequested( 'SIGTERM' ) )
+        self.assertEqual( fan.history[-1], 0 )
+        self.assertTrue( fan.closed )
+        self.driveLineLow.assert_called_once_with( 12 )
+        self.assertIn( "SIGTERM", self.log.info.call_args.args[0] )
+
+    def test_loop_turns_fan_off_on_keyboard_interrupt(self):
+        '''Ctrl-C ends the loop and leaves the fan off.'''
+        fan = self.runLoopUntil( KeyboardInterrupt )
+        self.assertEqual( fan.history[-1], 0 )
+        self.driveLineLow.assert_called_once_with( 12 )
+
+    def test_loop_shutdown_release_error_is_logged(self):
+        '''An error turning the fan off on shutdown is logged, not raised.'''
+        with patch.object( pistord, 'releaseFanLow', side_effect=OSError( "busy" ) ):
+            self.runLoopUntil( pistord.ShutdownRequested( 'SIGTERM' ) )
+        self.assertTrue( any( "Could not turn off fan" in m for m in self.errorMessages() ) )
+
+    def test_drive_line_low(self):
+        '''driveLineLow claims the GPIO as a low output on the header chip.'''
+        lgpio = MagicMock()
+        with patch.dict( sys.modules, { 'lgpio': lgpio } ), \
+             patch.object( pistord, 'findHeaderGPIOChip', return_value=( 15, 'pinctrl-rp1' ) ):
+            self.assertTrue( REAL_DRIVE_LINE_LOW( 13 ) )
+        lgpio.gpiochip_open.assert_called_once_with( 15 )
+        handle = lgpio.gpiochip_open.return_value
+        lgpio.gpio_claim_output.assert_called_once_with( handle, 13, 0 )
+        lgpio.gpiochip_close.assert_called_once_with( handle )
+
+    def test_drive_line_low_without_chip(self):
+        '''With no header chip found, driveLineLow warns and returns False.'''
+        with patch.object( pistord, 'findHeaderGPIOChip', return_value=None ):
+            self.assertFalse( REAL_DRIVE_LINE_LOW( 13 ) )
+        self.log.warning.assert_called_once()
+
+    def test_drive_line_low_claim_failure(self):
+        '''A failure claiming the line is logged and the chip still closed.'''
+        lgpio = MagicMock()
+        lgpio.gpio_claim_output.side_effect = RuntimeError( "GPIO busy" )
+        with patch.dict( sys.modules, { 'lgpio': lgpio } ), \
+             patch.object( pistord, 'findHeaderGPIOChip', return_value=( 0, 'pinctrl-rp1' ) ):
+            self.assertFalse( REAL_DRIVE_LINE_LOW( 13 ) )
+        lgpio.gpiochip_close.assert_called_once()
+        self.assertIn( "GPIO busy", self.log.warning.call_args.args[0] )
+
+
 # ---------------------------------------------------------------------- turnOffFan / usage
 
 class TestTurnOffFanAndUsage( PistordTestCase ):
@@ -767,6 +865,8 @@ class TestTurnOffFanAndUsage( PistordTestCase ):
         with patch.object( pistord, 'PWMOutputDevice', return_value=fan ):
             pistord.turnOffFan()
         self.assertEqual( fan.value, 0 )
+        self.assertTrue( fan.closed )
+        self.driveLineLow.assert_called_once_with( 13 )
         self.log.error.assert_not_called()
 
     def test_turn_off_failure_is_logged_not_raised(self):
@@ -789,7 +889,7 @@ class TestTurnOffFanAndUsage( PistordTestCase ):
 class TestCommandLine( unittest.TestCase ):
     '''Run pistord.py as __main__ with different arguments.'''
 
-    def runMain( self, *args, pwm=None, thread=None ):
+    def runMain( self, *args, pwm=None ):
         '''Execute pistord.py as a script with hardware and logging patched.
 
         Returns (stdout text, mock Logger class, fan).
@@ -803,7 +903,7 @@ class TestCommandLine( unittest.TestCase ):
             patch( 'logger.Logger', loggerClass ),
             patch( 'gpiozero.PWMOutputDevice', pwm ),
             patch( 'gpiozero.CPUTemperature', MagicMock( side_effect=OSError( "no sensor" ) ) ),
-            patch( 'threading.Thread', thread or MagicMock() ),
+            patch( 'signal.signal', MagicMock() ),          # keep the test runner's handlers
             patch( 'time.sleep', MagicMock( side_effect=StopLoop ) ),
             patch.dict( sys.modules, { 'lgpio': None } ),   # no real gpiochip probing
         ]
@@ -844,19 +944,17 @@ class TestCommandLine( unittest.TestCase ):
         _, _, fan = self.runMain( 'SHUTDOWN' )
         self.assertEqual( fan.history, [ 0, 0 ] )   # setupFan() then turnOffFan()
 
-    def test_service_starts_thread(self):
-        '''SERVICE starts startFanControl in a background thread.'''
-        thread = MagicMock()
-        self.runMain( 'SERVICE', thread=thread )
-        thread.assert_called_once()
-        self.assertEqual( thread.call_args.kwargs['target'].__name__, 'startFanControl' )
-        thread.return_value.start.assert_called_once()
+    def test_service_runs_in_foreground(self):
+        '''SERVICE runs fan control in the main thread (so signals reach it).'''
+        with self.assertRaises( StopLoop ):
+            self.runMain( 'SERVICE' )
 
-    def test_service_thread_failure_is_logged(self):
-        '''A failure to start the service thread is logged as an error.'''
-        thread = MagicMock( side_effect=RuntimeError( "can't start new thread" ) )
-        _, loggerClass, _ = self.runMain( 'SERVICE', thread=thread )
-        loggerClass.return_value.error.assert_called_once()
+    def test_service_installs_signal_handlers(self):
+        '''SERVICE installs the shutdown signal handlers.'''
+        with self.assertRaises( StopLoop ):
+            self.runMain( 'SERVICE' )
+        import signal  # pylint: disable=import-outside-toplevel
+        self.assertEqual( signal.signal.call_count, 3 )
 
     def test_debug_forces_console_and_runs_in_foreground(self):
         '''DEBUG switches logging to the console and runs fan control directly.'''
