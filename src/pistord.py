@@ -49,7 +49,7 @@ from logger import Logger
 # Some helpful constants
 #
 
-PYSTOR_VERSION = "1.1.2"  # Service version, "Major.Minor.Edit".  Change it with
+PYSTOR_VERSION = "1.1.3"  # Service version, "Major.Minor.Edit".  Change it with
                         # ./build_deb.sh --bump so debian/changelog matches.
 MIN_TEMP       = 10     # Minimum temp we care about (for CPU Temperature object)
 MAX_TEMP       = 80     # Maximum temp we can let the CPU get to

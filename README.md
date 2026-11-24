@@ -198,7 +198,7 @@ GPIO numbers use BCM numbering (the `GPIOnn` names, not physical pin numbers) an
 The daemon can be run directly from the command line for testing (from the `src/` directory):
 
 ```bash
-# Print version (e.g. "Version: 1.1.2")
+# Print version (e.g. "Version: 1.1.3")
 python3 pistord.py VERSION
 
 # Run fan control in the foreground with console logging (Ctrl-C turns the fan off)

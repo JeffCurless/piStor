@@ -1,3 +1,12 @@
+pistor (1.1.3) unstable; urgency=medium
+
+  * Turn the fan off and keep it off when the service stops: handle
+    SIGTERM/SIGINT/SIGHUP, run SERVICE in the main thread, and leave the
+    fan PWM line driven low on exit instead of letting gpiozero release it
+    to an input, which runs 4-pin fans at full speed.
+
+ -- Jeff Curless <jeff@thecurlesses.com>  Mon, 23 Nov 2026 21:27:48 -0500
+
 pistor (1.1.2) unstable; urgency=medium
 
   * Create the CPU temperature sensor with the fan's pin factory, removing
