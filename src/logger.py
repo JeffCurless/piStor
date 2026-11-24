@@ -5,6 +5,8 @@ Logging wrapper for the piStor fan control daemon.
 
 Provides Logger, which writes timestamped lines to a file via the standard
 logging module, or prints to the console when file logging is disabled.
+Every message is flushed as soon as it is written, so the log file (or
+console / journal) is always up to date even if the daemon is killed.
 '''
 import logging
 
@@ -43,8 +45,27 @@ class Logger:
                                      format='%(asctime)s %(process)d [%(levelname)s] %(message)s',
                                      datefmt='%b %d %y %H:%M:%S')
         except Exception as error:  # pylint: disable=broad-exception-caught
-            print( f"Error: Could not log events due to {error}." )
+            print( f"Error: Could not log events due to {error}.", flush=True )
             self._logEnabled = False
+
+    def _write( self, level: int, prefix: str, message: object ) -> None:
+        '''
+        Write one message to the log file or console, then flush it.
+
+        Parameters:
+            level   - logging level used when writing to the log file.
+            prefix  - Label printed before the message in console mode.
+            message - The message to log.
+        '''
+        if self._logEnabled:
+            logging.log( level, message )
+            for handler in logging.root.handlers:
+                try:
+                    handler.flush()
+                except Exception:  # pylint: disable=broad-exception-caught
+                    pass    # A failed flush must never take down the daemon
+        else:
+            print( f"{prefix}: {message}", flush=True )
 
     def info( self, message: object ) -> None:
         '''
@@ -54,10 +75,7 @@ class Logger:
             message - the message to display to the destination
 
         '''
-        if self._logEnabled:
-            logging.info( message )
-        else:
-            print( f"INFO: {message}" )
+        self._write( logging.INFO, "INFO", message )
 
     def debug( self, message: object ) -> None:
         '''
@@ -66,10 +84,7 @@ class Logger:
         Parameters:
             message - The message to log.
         '''
-        if self._logEnabled:
-            logging.debug( message )
-        else:
-            print( f"DEBUG: {message}" )
+        self._write( logging.DEBUG, "DEBUG", message )
 
     def warn( self, message: object ) -> None:
         '''
@@ -79,10 +94,7 @@ class Logger:
             message - The message to log
 
         '''
-        if self._logEnabled:
-            logging.warning( message )
-        else:
-            print( f"WARN: {message}" )
+        self._write( logging.WARNING, "WARN", message )
 
     def warning( self, message: object ) -> None:
         '''
@@ -101,10 +113,7 @@ class Logger:
             message - The message to log
 
         '''
-        if self._logEnabled:
-            logging.error( message )
-        else:
-            print( f"ERROR: {message}" )
+        self._write( logging.ERROR, "ERROR", message )
 
     def forceConsole(self) -> None:
         '''

@@ -13,6 +13,11 @@ from collections.abc import Iterator
 AUTO_FAN = 1
 MANUAL_FAN = 0
 
+DEFAULT_FAN_PWM_GPIO  = 13  # Fan PWM line, GPIO 13 (Pin 33)
+DEFAULT_FAN_TACH_GPIO = 18  # Fan tachometer line, GPIO 18 (Pin 12)
+MIN_GPIO = 0                # Lowest BCM GPIO number on the 40-pin header
+MAX_GPIO = 27               # Highest BCM GPIO number on the 40-pin header
+
 class piStorConfig():  # pylint: disable=invalid-name
     '''
     Reader for the piStor configuration file (see module docstring).
@@ -119,3 +124,53 @@ class piStorConfig():  # pylint: disable=invalid-name
         except Exception as error:  # pylint: disable=broad-exception-caught
             print( f"Error: Could not locate key {error}" )
         return mode
+
+    def _getGPIO( self, key: str, default: int ) -> int:
+        '''
+        Return a BCM GPIO number from the [gpio] section.
+
+        If the section or key is missing, the default is returned silently.
+        If the value is not an integer, or is outside the header's GPIO range
+        (MIN_GPIO-MAX_GPIO), an error is printed and the default is returned.
+
+        Parameters:
+            key     - Option name in the [gpio] section.
+            default - GPIO number to use when the option is missing or invalid.
+
+        Returns:
+            The GPIO number as an integer.
+        '''
+        if not self.configObj.has_option( 'gpio', key ):
+            return default
+        try:
+            gpio = self.configObj.getint( 'gpio', key )
+        except ValueError as error:
+            print( f"Error: Invalid [gpio] {key} value, using GPIO {default}: {error}" )
+            return default
+        if not MIN_GPIO <= gpio <= MAX_GPIO:
+            print( f"Error: [gpio] {key} = {gpio} is outside GPIO {MIN_GPIO}-{MAX_GPIO}, "
+                   f"using GPIO {default}" )
+            return default
+        return gpio
+
+    def getFanPWMGPIO( self ) -> int:
+        '''
+        Return the GPIO the fan PWM (speed control) line is connected to, from
+        the fanpwm key of the [gpio] section.  Defaults to GPIO 13 (Pin 33)
+        when missing or invalid.
+
+        Returns:
+            The BCM GPIO number as an integer.
+        '''
+        return self._getGPIO( 'fanpwm', DEFAULT_FAN_PWM_GPIO )
+
+    def getFanTachGPIO( self ) -> int:
+        '''
+        Return the GPIO the fan tachometer line is connected to, from the
+        fantach key of the [gpio] section.  Defaults to GPIO 18 (Pin 12) when
+        missing or invalid.
+
+        Returns:
+            The BCM GPIO number as an integer.
+        '''
+        return self._getGPIO( 'fantach', DEFAULT_FAN_TACH_GPIO )

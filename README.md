@@ -20,7 +20,7 @@ piStor can be installed two ways: as a Debian package (recommended) or with the 
 Build the package on the Pi (see [Building the Debian Package](#building-the-debian-package)), then install it with apt:
 
 ```bash
-sudo apt install ./dist/pistor_1.0.1_all.deb
+sudo apt install ./dist/pistor_1.1.2_all.deb
 ```
 
 apt automatically installs the required Raspberry Pi OS packages, so there is no need for `pip` or a virtual environment:
@@ -110,7 +110,7 @@ This runs the unit tests, builds `dist/pistor_<version>_all.deb`, and checks it 
 |---------|--------|
 | `./build_deb.sh` | Run the unit tests, build the package into `dist/`, and run lintian if installed |
 | `./build_deb.sh --no-test` | Build without running the unit tests |
-| `./build_deb.sh --bump 1.0.2 "What changed"` | Set a new version (see below), then build |
+| `./build_deb.sh --bump 1.1.3 "What changed"` | Set a new version (see below), then build |
 | `./build_deb.sh --clean` | Remove `dist/` and the debhelper build files |
 | `./build_deb.sh --help` | Show usage |
 
@@ -127,7 +127,7 @@ Versions have three parts, `Major.Minor.Edit` (for example `1.0.1`):
 The version is stored in two places that must match: `PYSTOR_VERSION` in `src/pistord.py` and the top entry of `debian/changelog`. Both the build and the unit tests fail if they differ, so always change the version with `--bump`, which updates both and adds a changelog entry:
 
 ```bash
-./build_deb.sh --bump 1.0.2 "Fix fan speed table parsing."
+./build_deb.sh --bump 1.1.3 "Fix fan speed table parsing."
 ```
 
 `--bump` only accepts three-part versions and refuses a version that is already in the changelog. Commit `src/pistord.py` and `debian/changelog` together after bumping.
@@ -136,12 +136,14 @@ The version is stored in two places that must match: `PYSTOR_VERSION` in `src/pi
 
 ### Hardware
 
-The service controls a PWM fan connected to the following GPIO pins on the Raspberry Pi 5:
+The service controls a PWM fan connected to the following GPIO pins on the Raspberry Pi 5 by default. Both can be changed in the `[gpio]` section of `/etc/pistor.conf` (see [Configuration File](#configuration-file)).
 
-| Signal      | GPIO | Header Pin |
-|-------------|------|------------|
-| PWM control | 13   | Pin 33     |
-| Tachometer  | 18   | —          |
+| Signal      | Default GPIO | Header Pin | Config key        |
+|-------------|--------------|------------|-------------------|
+| PWM control | 13           | Pin 33     | `[gpio] fanpwm`   |
+| Tachometer  | 18           | Pin 12     | `[gpio] fantach`  |
+
+The tachometer GPIO is read from the config and logged at startup, but fan speed is not measured yet.
 
 ### Fan Control Modes
 
@@ -175,6 +177,10 @@ The configuration file is installed at `/etc/pistor.conf`. If the file is missin
 [mode]
    autofan = 1        # 1 = automatic mode, 0 = manual table mode
 
+[gpio]
+   fanpwm  = 13       # BCM GPIO of the fan PWM (speed control) line
+   fantach = 18       # BCM GPIO of the fan tachometer line
+
 [FanSpeeds]           # Only used when autofan = 0
    20 = 0             # CPU temp (°C) = fan speed (%)
    30 = 20
@@ -185,12 +191,14 @@ The configuration file is installed at `/etc/pistor.conf`. If the file is missin
    70 = 100
 ```
 
+GPIO numbers use BCM numbering (the `GPIOnn` names, not physical pin numbers) and must be between 0 and 27. If the `[gpio]` section or a key is missing, the default is used. If a value is not a number or is out of range, the service logs an error and uses the default. After changing GPIOs, restart the service with `sudo systemctl restart pistord.service`.
+
 ### Running Locally
 
 The daemon can be run directly from the command line for testing (from the `src/` directory):
 
 ```bash
-# Print version (e.g. "Version: 1.0.1")
+# Print version (e.g. "Version: 1.1.2")
 python3 pistord.py VERSION
 
 # Run fan control in the foreground with console logging (no thread spawned)
@@ -202,6 +210,14 @@ python3 pistord.py SERVICE
 # Signal shutdown
 python3 pistord.py SHUTDOWN
 ```
+
+## Troubleshooting
+
+**`PinFactoryFallback: Falling back from lgpio: 'can not open gpiochip'`** with `Cannot determine SOC peripheral base address` in `/var/log/piStord.log` means the service could not open the GPIO header, so the fan is not being controlled.
+
+gpiozero expects the Pi 5 header GPIOs on `/dev/gpiochip0` (or `/dev/gpiochip4`), but some kernels (seen with 6.12.115) number that chip differently, for example `/dev/gpiochip15`. You can check with `gpiodetect`: the header chip is the one labelled `pinctrl-rp1` on a Pi 5 (`pinctrl-bcm2711` on a Pi 4).
+
+From version 1.1.1 the service finds the header chip by its label, so it works whatever number the kernel gives it. The log shows which chip it used, e.g. `Using /dev/gpiochip15 (pinctrl-rp1) for the GPIO header.`
 
 ## Running the Tests
 

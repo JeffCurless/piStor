@@ -1,3 +1,30 @@
+pistor (1.1.2) unstable; urgency=medium
+
+  * Create the CPU temperature sensor with the fan's pin factory, removing
+    the PinFactoryFallback warning from the journal.
+
+ -- Jeff Curless <jeff@thecurlesses.com>  Mon, 23 Nov 2026 19:40:36 -0500
+
+pistor (1.1.1) unstable; urgency=medium
+
+  * Find the GPIO header gpiochip by label, so the fan works on kernels
+    that do not number it gpiochip0 (e.g. gpiochip15).
+
+ -- Jeff Curless <jeff@thecurlesses.com>  Mon, 23 Nov 2026 19:29:39 -0500
+
+pistor (1.1.0) unstable; urgency=medium
+
+  * Fan PWM and tachometer GPIOs can be set in the [gpio] section of
+    pistor.conf.
+
+ -- Jeff Curless <jeff@thecurlesses.com>  Mon, 23 Nov 2026 19:11:49 -0500
+
+pistor (1.0.2) unstable; urgency=medium
+
+  * Flush every log line as soon as it is written.
+
+ -- Jeff Curless <jeff@thecurlesses.com>  Mon, 23 Nov 2026 18:48:49 -0500
+
 pistor (1.0.1) unstable; urgency=medium
 
   * Version numbers now use three parts: Major.Minor.Edit.

@@ -124,42 +124,42 @@ class TestLogger(unittest.TestCase):
         log = Logger(None)
         with patch('builtins.print') as mock_print:
             log.info("hello")
-            mock_print.assert_called_once_with("INFO: hello")
+            mock_print.assert_called_once_with("INFO: hello", flush=True)
 
     def test_debug_console_prefix(self):
         '''debug() should print "DEBUG: <message>" to the console.'''
         log = Logger(None)
         with patch('builtins.print') as mock_print:
             log.debug("hello")
-            mock_print.assert_called_once_with("DEBUG: hello")
+            mock_print.assert_called_once_with("DEBUG: hello", flush=True)
 
     def test_warn_console_prefix(self):
         '''warn() should print "WARN: <message>" to the console.'''
         log = Logger(None)
         with patch('builtins.print') as mock_print:
             log.warn("hello")
-            mock_print.assert_called_once_with("WARN: hello")
+            mock_print.assert_called_once_with("WARN: hello", flush=True)
 
     def test_warning_console_prefix(self):
         '''warning() should print "WARN: <message>", identical to warn().'''
         log = Logger(None)
         with patch('builtins.print') as mock_print:
             log.warning("hello")
-            mock_print.assert_called_once_with("WARN: hello")
+            mock_print.assert_called_once_with("WARN: hello", flush=True)
 
     def test_error_console_prefix(self):
         '''error() should print "ERROR: <message>".'''
         log = Logger(None)
         with patch('builtins.print') as mock_print:
             log.error("hello")
-            mock_print.assert_called_once_with("ERROR: hello")
+            mock_print.assert_called_once_with("ERROR: hello", flush=True)
 
     def test_console_empty_message(self):
         '''All log methods should handle an empty string message without error.'''
         log = Logger(None)
         with patch('builtins.print') as mock_print:
             log.info("")
-            mock_print.assert_called_once_with("INFO: ")
+            mock_print.assert_called_once_with("INFO: ", flush=True)
 
     def test_console_none_message_does_not_raise(self):
         '''Log methods should accept None as a message and not raise an exception.'''
@@ -179,7 +179,7 @@ class TestLogger(unittest.TestCase):
         long_msg = "x" * 10000
         with patch('builtins.print') as mock_print:
             log.info(long_msg)
-            mock_print.assert_called_once_with(f"INFO: {long_msg}")
+            mock_print.assert_called_once_with(f"INFO: {long_msg}", flush=True)
 
     def test_console_unicode_message(self):
         '''Log methods should pass unicode characters through unchanged.'''
@@ -187,14 +187,14 @@ class TestLogger(unittest.TestCase):
         msg = "caf\u00e9 \u4e2d\u6587"
         with patch('builtins.print') as mock_print:
             log.info(msg)
-            mock_print.assert_called_once_with(f"INFO: {msg}")
+            mock_print.assert_called_once_with(f"INFO: {msg}", flush=True)
 
     def test_console_percent_in_message_does_not_raise(self):
         '''A message containing % should not cause a string formatting error.'''
         log = Logger(None)
         with patch('builtins.print') as mock_print:
             log.info("100% complete")
-            mock_print.assert_called_once_with("INFO: 100% complete")
+            mock_print.assert_called_once_with("INFO: 100% complete", flush=True)
 
     def test_console_newline_in_message(self):
         '''A message containing a newline should be passed through as-is.'''
@@ -202,7 +202,7 @@ class TestLogger(unittest.TestCase):
         msg = "line1\nline2"
         with patch('builtins.print') as mock_print:
             log.info(msg)
-            mock_print.assert_called_once_with(f"INFO: {msg}")
+            mock_print.assert_called_once_with(f"INFO: {msg}", flush=True)
 
     # ------------------------------------------------------------------ warning alias
 
@@ -426,6 +426,61 @@ class TestLoggerExtra(unittest.TestCase):
 
         with patch('sys.stderr'):
             log.info(Unprintable())
+
+
+class TestLoggerFlush(unittest.TestCase):
+    '''Every log line must be flushed as soon as it is written.'''
+
+    def setUp(self):
+        for h in logging.root.handlers[:]:
+            h.close()
+            logging.root.removeHandler(h)
+        f = tempfile.NamedTemporaryFile(suffix='.log', delete=False)
+        f.close()
+        self.path = f.name
+
+    def tearDown(self):
+        for h in logging.root.handlers[:]:
+            h.close()
+            logging.root.removeHandler(h)
+        os.unlink(self.path)
+
+    def test_console_output_is_flushed(self):
+        '''Console messages are printed with flush=True for every level.'''
+        log = Logger(None)
+        for method in (log.info, log.debug, log.warn, log.warning, log.error):
+            with patch('builtins.print') as mock_print:
+                method("msg")
+            self.assertTrue(mock_print.call_args.kwargs.get('flush'), method.__name__)
+
+    def test_file_handlers_flushed_after_each_message(self):
+        '''Each file log call flushes the root handlers.'''
+        log = Logger(self.path)
+        handler = logging.root.handlers[0]
+        with patch.object(handler, 'flush', wraps=handler.flush) as mock_flush:
+            log.info("one")
+            log.error("two")
+        self.assertGreaterEqual(mock_flush.call_count, 2)
+
+    def test_line_on_disk_immediately(self):
+        '''A logged line can be read from the file right away.'''
+        log = Logger(self.path)
+        log.warn("visible now")
+        with open(self.path, encoding='utf-8') as f:
+            self.assertIn("visible now", f.read())
+
+    def test_flush_failure_does_not_raise(self):
+        '''A handler whose flush() fails must not break logging.'''
+        log = Logger(self.path)
+        handler = logging.root.handlers[0]
+        with patch.object(handler, 'flush', side_effect=OSError("disk gone")):
+            log.info("still fine")
+
+    def test_init_error_message_is_flushed(self):
+        '''The "could not log events" fallback message is flushed.'''
+        with patch('builtins.print') as mock_print:
+            Logger('/nonexistent/directory/test.log')
+        self.assertTrue(mock_print.call_args.kwargs.get('flush'))
 
 
 if __name__ == "__main__":

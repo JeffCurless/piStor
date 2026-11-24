@@ -23,6 +23,9 @@ from tests import SRC
 
 PISTORD_PATH = os.path.join( SRC, 'pistord.py' )
 
+# Real implementations, saved before PistordTestCase patches them out.
+REAL_GET_PIN_FACTORY = pistord.getPinFactory
+
 
 class StopLoop( BaseException ):
     '''Raised by the patched sleep to break out of runFanLoop().
@@ -97,6 +100,10 @@ class PistordTestCase( unittest.TestCase ):
         patcher = patch.object( pistord, 'log', MagicMock() )
         self.log = patcher.start()
         self.addCleanup( patcher.stop )
+        # Never probe the real /dev/gpiochip* devices from unit tests.
+        factory = patch.object( pistord, 'getPinFactory', return_value=None )
+        self.getPinFactory = factory.start()
+        self.addCleanup( factory.stop )
 
     def errorMessages( self ):
         '''Return all messages passed to log.error().'''
@@ -122,6 +129,14 @@ class TestSetupFan( PistordTestCase ):
         self.assertEqual( fan.args, (13,) )
         self.assertEqual( fan.kwargs, { 'frequency': 100 } )
 
+    def test_passes_pin_factory_when_found(self):
+        '''A header pin factory is handed to the PWM device.'''
+        factory = object()
+        self.getPinFactory.return_value = factory
+        with patch.object( pistord, 'PWMOutputDevice', FakeFan ):
+            fan = pistord.setupFan( 13 )
+        self.assertEqual( fan.kwargs, { 'frequency': 100, 'pin_factory': factory } )
+
     def test_device_error_raises_value_error(self):
         '''If the device cannot be created, ValueError is raised.'''
         with patch.object( pistord, 'PWMOutputDevice', side_effect=OSError( "busy" ) ):
@@ -146,6 +161,141 @@ class TestSetupFan( PistordTestCase ):
                 pistord.setupFan( 13 )
 
 
+# ---------------------------------------------------------------------- gpiochip discovery
+
+def fakeLgpio( chips, failing=() ):
+    '''Return a fake lgpio module whose chips map number -> label.'''
+    module = MagicMock()
+    def _open( chip ):
+        if chip in failing:
+            raise OSError( "can not open gpiochip" )
+        return chip
+    module.gpiochip_open.side_effect = _open
+    module.gpio_get_chip_info.side_effect = \
+        lambda h: [ 0, 54, f'gpiochip{h}', chips[h] ]
+    return module
+
+
+class TestFindHeaderGPIOChip( PistordTestCase ):
+    '''Tests for findHeaderGPIOChip().'''
+
+    PI5_NORMAL = { 0: 'pinctrl-rp1', 10: 'gpio-brcmstb@107d508500',
+                   11: 'gpio-brcmstb@107d517c00' }
+    # Layout seen on a Pi 5 running kernel 6.12.115: no gpiochip0 or gpiochip4.
+    PI5_RENUMBERED = { 11: 'gpio-brcmstb@107d517c00', 12: 'gpio-brcmstb@107d517c20',
+                       13: 'gpio-brcmstb@107d508500', 14: 'gpio-brcmstb@107d508520',
+                       15: 'pinctrl-rp1' }
+
+    def find( self, chips, failing=(), links=() ):
+        '''Run findHeaderGPIOChip() against fake devices.'''
+        paths = [ f'/dev/gpiochip{n}' for n in chips ] + list( links )
+        module = fakeLgpio( chips, failing )
+        with patch.dict( sys.modules, { 'lgpio': module } ), \
+             patch.object( pistord.glob, 'glob', return_value=paths ), \
+             patch.object( pistord.os.path, 'islink', side_effect=lambda p: p in links ):
+            return pistord.findHeaderGPIOChip(), module
+
+    def test_pi5_header_is_gpiochip0(self):
+        '''On a normal Pi 5 the RP1 chip (gpiochip0) is found.'''
+        result, _ = self.find( self.PI5_NORMAL )
+        self.assertEqual( result, ( 0, 'pinctrl-rp1' ) )
+
+    def test_renumbered_kernel_finds_gpiochip15(self):
+        '''When the kernel numbers the RP1 chip 15, it is still found by label.'''
+        result, _ = self.find( self.PI5_RENUMBERED )
+        self.assertEqual( result, ( 15, 'pinctrl-rp1' ) )
+
+    def test_symlinks_are_skipped(self):
+        '''/dev/gpiochip4 -> gpiochip0 is not opened a second time.'''
+        _, module = self.find( self.PI5_NORMAL, links=( '/dev/gpiochip4', ) )
+        opened = [ c.args[0] for c in module.gpiochip_open.call_args_list ]
+        self.assertNotIn( 4, opened )
+
+    def test_chips_are_closed(self):
+        '''Every chip opened for probing is closed again.'''
+        _, module = self.find( self.PI5_RENUMBERED )
+        self.assertEqual( module.gpiochip_open.call_count, module.gpiochip_close.call_count )
+
+    def test_unopenable_chip_is_skipped(self):
+        '''A chip that cannot be opened does not stop the search.'''
+        result, _ = self.find( self.PI5_RENUMBERED, failing=( 11, 12 ) )
+        self.assertEqual( result, ( 15, 'pinctrl-rp1' ) )
+
+    def test_older_pi_labels(self):
+        '''Pi 4 and Pi 3 header chips are recognised.'''
+        self.assertEqual( self.find( { 0: 'pinctrl-bcm2711', 1: 'raspberrypi-exp-gpio' } )[0],
+                          ( 0, 'pinctrl-bcm2711' ) )
+        self.assertEqual( self.find( { 0: 'pinctrl-bcm2835' } )[0], ( 0, 'pinctrl-bcm2835' ) )
+
+    def test_no_header_chip_returns_none(self):
+        '''If no chip has a header label, None is returned.'''
+        result, _ = self.find( { 0: 'some-other-gpio' } )
+        self.assertIsNone( result )
+
+    def test_no_lgpio_returns_none(self):
+        '''Without lgpio installed, None is returned.'''
+        with patch.dict( sys.modules, { 'lgpio': None } ):
+            self.assertIsNone( pistord.findHeaderGPIOChip() )
+
+
+class TestMakeLGPIOFactory( unittest.TestCase ):
+    '''Tests for makeLGPIOFactory(), the gpiozero chip-number workaround.'''
+
+    def test_opens_requested_chip(self):
+        '''The requested chip is opened, not the one gpiozero would pick.'''
+        class BaseFactory:  # pylint: disable=too-few-public-methods
+            def __init__( self ):
+                self.baseInitialised = True
+
+        class LGPIOFactory( BaseFactory ):  # pylint: disable=too-few-public-methods
+            def __init__( self, chip=None ):  # pylint: disable=super-init-not-called
+                raise AssertionError( "gpiozero's __init__ must be bypassed" )
+
+        lgpio = MagicMock()
+        lgpio.gpiochip_open.return_value = 'handle'
+        pinClass = object()
+        modules = { 'lgpio': lgpio,
+                    'gpiozero.pins.lgpio': MagicMock( LGPIOFactory=LGPIOFactory,
+                                                      LGPIOPin=pinClass ) }
+        with patch.dict( sys.modules, modules ):
+            factory = pistord.makeLGPIOFactory( 15 )
+        lgpio.gpiochip_open.assert_called_once_with( 15 )
+        self.assertIsInstance( factory, LGPIOFactory )
+        self.assertTrue( factory.baseInitialised )
+        self.assertEqual( ( factory._chip, factory._handle ), ( 15, 'handle' ) )
+        self.assertIs( factory.pin_class, pinClass )
+
+
+class TestGetPinFactory( PistordTestCase ):
+    '''Tests for getPinFactory() (the real one, not the setUp patch).'''
+
+    def setUp( self ):
+        super().setUp()
+        self.factoryClass = self.enterContext( patch.object( pistord, 'makeLGPIOFactory' ) )
+
+    def test_factory_bound_to_found_chip(self):
+        '''An LGPIOFactory is created for the header chip and the choice logged.'''
+        with patch.object( pistord, 'findHeaderGPIOChip', return_value=( 15, 'pinctrl-rp1' ) ):
+            factory = REAL_GET_PIN_FACTORY()
+        self.factoryClass.assert_called_once_with( 15 )
+        self.assertIs( factory, self.factoryClass.return_value )
+        self.assertIn( "/dev/gpiochip15", self.log.info.call_args.args[0] )
+
+    def test_no_chip_returns_none_with_warning(self):
+        '''If no header chip is found, None is returned and a warning logged.'''
+        with patch.object( pistord, 'findHeaderGPIOChip', return_value=None ):
+            self.assertIsNone( REAL_GET_PIN_FACTORY() )
+        self.log.warning.assert_called_once()
+        self.factoryClass.assert_not_called()
+
+    def test_factory_error_returns_none_with_warning(self):
+        '''If the factory cannot be created, None is returned and a warning logged.'''
+        self.factoryClass.side_effect = OSError( "can not open gpiochip" )
+        with patch.object( pistord, 'findHeaderGPIOChip', return_value=( 15, 'pinctrl-rp1' ) ):
+            self.assertIsNone( REAL_GET_PIN_FACTORY() )
+        self.assertIn( "can not open gpiochip", self.log.warning.call_args.args[0] )
+
+
 # ---------------------------------------------------------------------- setupTemperatureObject
 
 class TestSetupTemperatureObject( PistordTestCase ):
@@ -163,6 +313,19 @@ class TestSetupTemperatureObject( PistordTestCase ):
         with patch.object( pistord, 'CPUTemperature', side_effect=OSError( "no thermal zone" ) ):
             self.assertIsNone( pistord.setupTemperatureObject() )
         self.assertIn( "no thermal zone", self.errorMessages()[0] )
+
+    def test_default_pin_factory_when_none(self):
+        '''With no pin factory, CPUTemperature is created with no arguments.'''
+        with patch.object( pistord, 'CPUTemperature' ) as cls:
+            pistord.setupTemperatureObject()
+        cls.assert_called_once_with()
+
+    def test_uses_given_pin_factory(self):
+        '''A pin factory is passed through, so gpiozero does not probe for one.'''
+        factory = object()
+        with patch.object( pistord, 'CPUTemperature' ) as cls:
+            pistord.setupTemperatureObject( factory )
+        cls.assert_called_once_with( pin_factory=factory )
 
 
 # ---------------------------------------------------------------------- autoFanSpeed
@@ -264,6 +427,28 @@ class TestGetFanSpeed( PistordTestCase ):
 
 class TestRunFanLoop( PistordTestCase ):
     '''Tests for runFanLoop(), the shared control loop.'''
+
+    def test_sensor_shares_fan_pin_factory(self):
+        '''The temperature sensor uses the fan's pin factory, including on retry.'''
+        fan = FakeFan()
+        fan.pin_factory = factory = object()
+        sensor = MagicMock( side_effect=[ OSError( "first" ), FakeSensor() ] )
+        with patch.object( pistord, 'PWMOutputDevice', return_value=fan ), \
+             patch.object( pistord, 'CPUTemperature', sensor ), \
+             patch.object( pistord.time, 'sleep', stopAfter( 2 ) ):
+            with self.assertRaises( StopLoop ):
+                pistord.runFanLoop( lambda s: 0.5 )
+        self.assertEqual( [ c.kwargs for c in sensor.call_args_list ],
+                          [ { 'pin_factory': factory } ] * 2 )
+
+    def test_uses_given_pwm_gpio(self):
+        '''runFanLoop() creates the fan on the GPIO it is given.'''
+        with patch.object( pistord, 'PWMOutputDevice', return_value=FakeFan() ) as dev, \
+             patch.object( pistord, 'CPUTemperature', return_value=FakeSensor() ), \
+             patch.object( pistord.time, 'sleep', stopAfter( 1 ) ):
+            with self.assertRaises( StopLoop ):
+                pistord.runFanLoop( lambda s: 0.5, 19 )
+        self.assertEqual( dev.call_args.args[0], 19 )
 
     def runLoop( self, compute, iterations, sensorFactory, fan=None ):
         '''Run the loop for the given number of iterations.
@@ -414,7 +599,7 @@ class TestControlFan( PistordTestCase ):
         '''Automatic mode runs the loop with autoFanSpeed.'''
         with patch.object( pistord, 'runFanLoop' ) as loop:
             pistord.controlFanAuto()
-        loop.assert_called_once_with( pistord.autoFanSpeed )
+        loop.assert_called_once_with( pistord.autoFanSpeed, pistord.FAN_PWM_GPIO )
         self.assertIn( "automatic", self.log.info.call_args.args[0] )
 
     def test_manual_uses_table_with_temperature_in_celsius(self):
@@ -424,6 +609,18 @@ class TestControlFan( PistordTestCase ):
         compute = loop.call_args.args[0]
         self.assertEqual( compute( FakeSensor( value=0.01, temperature=50 ) ), 0.2 )
         self.assertEqual( compute( FakeSensor( value=0.99, temperature=10 ) ), 1.0 )
+
+    def test_auto_passes_gpio_to_loop(self):
+        '''controlFanAuto() hands its PWM GPIO to runFanLoop().'''
+        with patch.object( pistord, 'runFanLoop' ) as loop:
+            pistord.controlFanAuto( 12 )
+        self.assertEqual( loop.call_args.args[1], 12 )
+
+    def test_manual_passes_gpio_to_loop(self):
+        '''controlFanManual() hands its PWM GPIO to runFanLoop().'''
+        with patch.object( pistord, 'runFanLoop' ) as loop:
+            pistord.controlFanManual( TABLE, 19 )
+        self.assertEqual( loop.call_args.args[1], 19 )
 
     def test_manual_logs_table(self):
         '''Manual mode logs the speed table it is using.'''
@@ -472,7 +669,7 @@ class TestStartFanControl( PistordTestCase ):
         '''autofan = 0 selects manual mode with the configured table.'''
         self.writeConf( f"[mode]\nautofan = {MANUAL_FAN}\n[FanSpeeds]\n20 = 0\n60 = 80\n" )
         pistord.startFanControl()
-        self.controlFanManual.assert_called_once_with( [ (20, 0), (60, 80) ] )
+        self.controlFanManual.assert_called_once_with( [ (20, 0), (60, 80) ], 13 )
         self.controlFanAuto.assert_not_called()
 
     def test_unknown_mode_falls_back_to_auto(self):
@@ -495,6 +692,39 @@ class TestStartFanControl( PistordTestCase ):
         pistord.startFanControl()
         self.controlFanAuto.assert_called_once()
 
+    def test_configured_pwm_gpio_used_in_auto_mode(self):
+        '''[gpio] fanpwm is passed to automatic mode and logged.'''
+        self.writeConf( f"[mode]\nautofan = {AUTO_FAN}\n[gpio]\nfanpwm = 12\nfantach = 24\n" )
+        pistord.startFanControl()
+        self.controlFanAuto.assert_called_once_with( 12 )
+        logged = " ".join( c.args[0] for c in self.log.info.call_args_list )
+        self.assertIn( "GPIO 12", logged )
+        self.assertIn( "GPIO 24", logged )
+
+    def test_configured_pwm_gpio_used_in_manual_mode(self):
+        '''[gpio] fanpwm is passed to manual mode.'''
+        self.writeConf( f"[mode]\nautofan = {MANUAL_FAN}\n[gpio]\nfanpwm = 19\n"
+                        "[FanSpeeds]\n20 = 0\n" )
+        pistord.startFanControl()
+        self.controlFanManual.assert_called_once_with( [ (20, 0) ], 19 )
+
+    def test_unknown_mode_uses_configured_gpio(self):
+        '''The automatic fallback for an unknown mode still uses [gpio] fanpwm.'''
+        self.writeConf( "[mode]\nautofan = 7\n[gpio]\nfanpwm = 12\n" )
+        pistord.startFanControl()
+        self.controlFanAuto.assert_called_once_with( 12 )
+
+    def test_missing_gpio_section_uses_default(self):
+        '''With no [gpio] section the fan PWM defaults to GPIO 13.'''
+        self.writeConf( f"[mode]\nautofan = {AUTO_FAN}\n" )
+        pistord.startFanControl()
+        self.controlFanAuto.assert_called_once_with( 13 )
+
+    def test_missing_config_uses_default_gpio(self):
+        '''With no config file the fan PWM defaults to GPIO 13.'''
+        pistord.startFanControl()
+        self.controlFanAuto.assert_called_once_with( 13 )
+
     def test_bundled_template_selects_auto(self):
         '''The repository's pistor.conf template selects automatic mode.'''
         with patch.object( pistord, 'CONFIG_PATH', os.path.join( SRC, 'pistor.conf' ) ):
@@ -506,6 +736,29 @@ class TestStartFanControl( PistordTestCase ):
 
 class TestTurnOffFanAndUsage( PistordTestCase ):
     '''Tests for turnOffFan() and usage().'''
+
+    def setUp( self ):
+        super().setUp()
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.addCleanup( self.tmpdir.cleanup )
+        self.conf = os.path.join( self.tmpdir.name, 'pistor.conf' )
+        p = patch.object( pistord, 'CONFIG_PATH', self.conf )
+        p.start()
+        self.addCleanup( p.stop )
+
+    def test_turn_off_uses_default_gpio_without_config(self):
+        '''With no config file, the fan on GPIO 13 is turned off.'''
+        with patch.object( pistord, 'PWMOutputDevice', return_value=FakeFan() ) as dev:
+            pistord.turnOffFan()
+        self.assertEqual( dev.call_args.args[0], 13 )
+
+    def test_turn_off_uses_configured_gpio(self):
+        '''SHUTDOWN turns off the fan on the [gpio] fanpwm GPIO.'''
+        with open( self.conf, 'w', encoding='utf-8' ) as f:
+            f.write( "[gpio]\nfanpwm = 12\n" )
+        with patch.object( pistord, 'PWMOutputDevice', return_value=FakeFan() ) as dev:
+            pistord.turnOffFan()
+        self.assertEqual( dev.call_args.args[0], 12 )
 
     def test_turn_off_sets_zero(self):
         '''turnOffFan() sets the fan duty cycle to zero.'''
@@ -552,6 +805,7 @@ class TestCommandLine( unittest.TestCase ):
             patch( 'gpiozero.CPUTemperature', MagicMock( side_effect=OSError( "no sensor" ) ) ),
             patch( 'threading.Thread', thread or MagicMock() ),
             patch( 'time.sleep', MagicMock( side_effect=StopLoop ) ),
+            patch.dict( sys.modules, { 'lgpio': None } ),   # no real gpiochip probing
         ]
         for p in patches:
             p.start()

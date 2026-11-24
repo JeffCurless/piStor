@@ -7,8 +7,8 @@
 # Usage:
 #   ./build_deb.sh                  Build dist/pistor_<version>_all.deb
 #   ./build_deb.sh --no-test        Build without running the unit tests
-#   ./build_deb.sh --bump 1.0.2 ["msg"]
-#                                   Set the version to 1.0.2 in src/pistord.py and
+#   ./build_deb.sh --bump 1.1.3 ["msg"]
+#                                   Set the version to 1.1.3 in src/pistord.py and
 #                                   debian/changelog, then build.  Versions are
 #                                   Major.Minor.Edit (three numbers).
 #   ./build_deb.sh --clean          Remove dist/ and debhelper build files
@@ -58,7 +58,7 @@ bump() {
     local version=$1
     local message=${2:-"New upstream version $version."}
 
-    [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "invalid version '$version' (expected Major.Minor.Edit, e.g. 1.0.2)"
+    [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "invalid version '$version' (expected Major.Minor.Edit, e.g. 1.1.3)"
     [ "$version" != "$(dpkg-parsechangelog -S Version)" ] || die "version $version is already in debian/changelog"
 
     sed -i "s/^\(PYSTOR_VERSION *= *\)\"[^\"]*\"/\1\"$version\"/" src/pistord.py
@@ -71,7 +71,8 @@ bump() {
     {
         echo "$PKG ($version) unstable; urgency=medium"
         echo
-        echo "  * $message"
+        # Wrap at 76 columns so lintian accepts the line length.
+        echo "$message" | fold -s -w 72 | sed -e '1s/^/  * /' -e '2,$s/^/    /' -e 's/ *$//'
         echo
         echo " -- $maintainer  $(date -R)"
         echo
@@ -89,7 +90,7 @@ while [ $# -gt 0 ]; do
             RUN_TESTS=0
             ;;
         --bump)
-            [ $# -ge 2 ] || die "--bump needs a version, e.g. --bump 1.0.2"
+            [ $# -ge 2 ] || die "--bump needs a version, e.g. --bump 1.1.3"
             if [ $# -ge 3 ] && [[ "$3" != --* ]]; then
                 bump "$2" "$3"
                 shift 2

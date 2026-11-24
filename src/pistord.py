@@ -5,8 +5,9 @@
 piStor fan control daemon for Raspberry Pi 5.
 
 Reads CPU temperature via gpiozero and adjusts a PWM fan connected to:
-  - Fan PWM: GPIO 13 (Pin 33)
-  - Fan tachometer: GPIO 18 (not currently read)
+  - Fan PWM: GPIO 13 (Pin 33) by default
+  - Fan tachometer: GPIO 18 (Pin 12) by default (not currently read)
+Both GPIOs can be changed in the [gpio] section of /etc/pistor.conf.
 
 The control mode comes from /etc/pistor.conf (automatic if the file is
 missing) and messages are logged to /var/log/piStord.log.
@@ -26,7 +27,9 @@ Requires the gpiozero library (sudo pip3 install gpiozero).
 # will be new direction for all prior version the RPIi.)
 #
 
+import glob
 import os
+import re
 import sys
 import time
 from collections.abc import Callable
@@ -34,23 +37,34 @@ from threading import Thread
 
 from gpiozero import CPUTemperature, PWMOutputDevice
 
-from configtool import AUTO_FAN, MANUAL_FAN, piStorConfig
+from configtool import (AUTO_FAN, DEFAULT_FAN_PWM_GPIO, DEFAULT_FAN_TACH_GPIO,
+                        MANUAL_FAN, piStorConfig)
 from logger import Logger
 
 #
 # Some helpful constants
 #
 
-PYSTOR_VERSION = "1.0.1"  # Service version, "Major.Minor.Edit".  Change it with
+PYSTOR_VERSION = "1.1.2"  # Service version, "Major.Minor.Edit".  Change it with
                         # ./build_deb.sh --bump so debian/changelog matches.
 MIN_TEMP       = 10     # Minimum temp we care about (for CPU Temperature object)
 MAX_TEMP       = 80     # Maximum temp we can let the CPU get to
-FAN_PWM_GPIO   = 13     # Fan PWM line is connected to GPIO 13 (Pin 33)
-FAN_TACK_GPIO  = 18     # Fan TAC line is connected to GPIO 18
+FAN_PWM_GPIO   = DEFAULT_FAN_PWM_GPIO   # Default fan PWM GPIO 13 (Pin 33); see [gpio] fanpwm
+FAN_TACK_GPIO  = DEFAULT_FAN_TACH_GPIO  # Default fan TAC GPIO 18 (Pin 12); see [gpio] fantach
 
 UPDATE_PERIOD  = 5      # Number of seconds between checking the temperature and
                         # modifing the fan speed
 LOG_INTERVAL   = 720    # Loop iterations between status log lines (1 hour)
+
+#
+# Labels of the gpiochip that drives the 40-pin header, newest Pi first.  The
+# chip's number varies by kernel (Pi 5 is usually gpiochip0, but some kernels
+# number it gpiochip15), so it is located by label rather than number.
+#
+HEADER_CHIP_LABELS = ( 'pinctrl-rp1',      # Raspberry Pi 5 / CM5
+                       'pinctrl-bcm2711',  # Raspberry Pi 4 / CM4
+                       'pinctrl-bcm2835' ) # Raspberry Pi 3 and earlier
+GPIOCHIP_GLOB = '/dev/gpiochip*'
 
 CONFIG_PATH = '/etc/pistor.conf'
 LOG_PATH    = '/var/log/piStord.log'
@@ -60,6 +74,102 @@ LOG_PATH    = '/var/log/piStord.log'
 # main entry point replaces it with a file logger.
 #
 log = Logger(None)
+
+def findHeaderGPIOChip() -> tuple[int, str] | None:
+    '''
+    Find the gpiochip that drives the 40-pin GPIO header.
+
+    Opens each /dev/gpiochipN device with lgpio and returns the first whose
+    label is in HEADER_CHIP_LABELS (checked in that order).  Symlinks such as
+    /dev/gpiochip4 -> gpiochip0 are skipped so each chip is only opened once.
+
+    Returns:
+        A (chip number, label) tuple, or None if lgpio is not installed or no
+        header chip is found.
+    '''
+    try:
+        import lgpio  # pylint: disable=import-outside-toplevel
+    except ImportError:
+        return None
+
+    found: dict[str, int] = {}
+    for path in sorted( glob.glob( GPIOCHIP_GLOB ) ):
+        match = re.search( r'gpiochip(\d+)$', path )
+        if match is None or os.path.islink( path ):
+            continue
+        chip = int( match.group( 1 ) )
+        try:
+            handle = lgpio.gpiochip_open( chip )
+            try:
+                label = lgpio.gpio_get_chip_info( handle )[3]
+            finally:
+                lgpio.gpiochip_close( handle )
+        except Exception:  # pylint: disable=broad-exception-caught
+            continue    # Not openable (e.g. permissions); try the next chip
+        found.setdefault( label, chip )
+
+    for label in HEADER_CHIP_LABELS:
+        if label in found:
+            return ( found[label], label )
+    return None
+
+def makeLGPIOFactory( chip: int ) -> object:
+    '''
+    Create a gpiozero LGPIOFactory that uses the given gpiochip.
+
+    gpiozero 2.0.1's LGPIOFactory ignores its chip argument and always opens
+    gpiochip4 or gpiochip0, so this subclass opens the requested chip itself.
+
+    Parameters:
+        chip - The /dev/gpiochipN number to open.
+
+    Returns:
+        An LGPIOFactory instance bound to that chip.
+
+    Raises:
+        lgpio.error (or ImportError) if the chip cannot be opened.
+    '''
+    # pylint: disable=import-outside-toplevel
+    import lgpio
+    from gpiozero.pins.lgpio import LGPIOFactory, LGPIOPin
+
+    class ChipLGPIOFactory( LGPIOFactory ):  # pylint: disable=too-few-public-methods
+        '''LGPIOFactory bound to a specific gpiochip.'''
+        def __init__( self, chipNumber: int ) -> None:  # pylint: disable=super-init-not-called
+            # Skip LGPIOFactory.__init__ (it picks its own chip) and run the
+            # base pin factory setup, then open the requested chip.
+            super( LGPIOFactory, self ).__init__()  # pylint: disable=bad-super-call
+            self._handle   = lgpio.gpiochip_open( chipNumber )
+            self._chip     = chipNumber
+            self.pin_class = LGPIOPin
+
+    return ChipLGPIOFactory( chip )
+
+def getPinFactory() -> object | None:
+    '''
+    Return a gpiozero lgpio pin factory bound to the GPIO header's gpiochip.
+
+    gpiozero picks the gpiochip by number (4 or 0 on a Pi 5), which fails on
+    kernels that number the header chip differently ("can not open
+    gpiochip").  This locates the chip by label instead (findHeaderGPIOChip).
+
+    Returns:
+        An LGPIOFactory for the header chip, or None to let gpiozero choose
+        its default pin factory (the reason is logged).
+    '''
+    header = findHeaderGPIOChip()
+    if header is None:
+        log.warning( "Could not find the GPIO header gpiochip, using gpiozero's default." )
+        return None
+    chip, label = header
+    try:
+        factory = makeLGPIOFactory( chip )
+    except Exception as error:  # pylint: disable=broad-exception-caught
+        log.warning( f"Could not open /dev/gpiochip{chip} ({label}), using gpiozero's "
+                     f"default. Error: {error}" )
+        return None
+    log.info( f"Using /dev/gpiochip{chip} ({label}) for the GPIO header." )
+    return factory
 
 def setupFan(fanPWMGPIO: int) -> PWMOutputDevice:
     '''
@@ -76,7 +186,11 @@ def setupFan(fanPWMGPIO: int) -> PWMOutputDevice:
         ValueError - if the PWM device cannot be created.
     '''
     try:
-        fan = PWMOutputDevice( fanPWMGPIO, frequency=100)
+        factory = getPinFactory()
+        if factory is None:
+            fan = PWMOutputDevice( fanPWMGPIO, frequency=100 )
+        else:
+            fan = PWMOutputDevice( fanPWMGPIO, frequency=100, pin_factory=factory )
         fan.value = 0
     except Exception as error:  # pylint: disable=broad-exception-caught
         log.error( f"Error attempting to create output PWM device, error is {error}" )
@@ -84,21 +198,46 @@ def setupFan(fanPWMGPIO: int) -> PWMOutputDevice:
 
     return fan
 
-def setupTemperatureObject() -> CPUTemperature | None:
+def newCPUTemperature( pinFactory: object | None = None ) -> CPUTemperature:
     '''
-    Create and return a default CPUTemperature object.
+    Create a CPUTemperature object.
+
+    Passing the fan's pin factory stops gpiozero from probing for a default
+    one, which logs a PinFactoryFallback warning on kernels where its own
+    gpiochip lookup fails.
+
+    Parameters:
+        pinFactory - gpiozero pin factory to use, or None for gpiozero's default.
+
+    Returns:
+        A CPUTemperature object.
+
+    Raises:
+        Any error raised by gpiozero while creating the object.
+    '''
+    if pinFactory is None:
+        return CPUTemperature()
+    return CPUTemperature( pin_factory=pinFactory )
+
+def setupTemperatureObject( pinFactory: object | None = None ) -> CPUTemperature | None:
+    '''
+    Create and return a CPUTemperature object.
+
+    Parameters:
+        pinFactory - gpiozero pin factory to use, or None for gpiozero's default.
 
     Returns:
         A CPUTemperature object, or None if creation fails (the error is
         logged).
     '''
     try:
-        return CPUTemperature()
+        return newCPUTemperature( pinFactory )
     except Exception as error:  # pylint: disable=broad-exception-caught
         log.error( f"Error creating CPU temperature object, error is {error}" )
         return None
 
-def runFanLoop( computeSpeed: Callable[[CPUTemperature], float] ) -> None:
+def runFanLoop( computeSpeed: Callable[[CPUTemperature], float],
+                fanPWMGPIO: int = FAN_PWM_GPIO ) -> None:
     '''
     Run the fan control loop forever, waking every UPDATE_PERIOD seconds.
 
@@ -115,20 +254,22 @@ def runFanLoop( computeSpeed: Callable[[CPUTemperature], float] ) -> None:
     Parameters:
         computeSpeed - Function mapping a CPUTemperature object to a fan duty
                        cycle in the range 0.0-1.0.
+        fanPWMGPIO   - GPIO the fan PWM line is connected to.
     '''
     try:
-        fan = setupFan( FAN_PWM_GPIO )
+        fan = setupFan( fanPWMGPIO )
     except ValueError as error:
         log.error( f"Fan control not started: {error}" )
         return
-    cpuTemp = setupTemperatureObject()
+    pinFactory = getattr( fan, 'pin_factory', None )
+    cpuTemp = setupTemperatureObject( pinFactory )
 
     count = 0
     failing = False
     while True:
         try:
             if cpuTemp is None:
-                cpuTemp = CPUTemperature()
+                cpuTemp = newCPUTemperature( pinFactory )
             if (count % LOG_INTERVAL) == 0:
                 if fan.value >= 1.0:
                     log.warning( f"Temperature at {cpuTemp.temperature} fan running at 100%." )
@@ -162,13 +303,16 @@ def autoFanSpeed( cpuTemp: CPUTemperature ) -> float:
     '''
     return min( float(cpuTemp.value) + 0.1, 1.0 )
 
-def controlFanAuto() -> None:
+def controlFanAuto( fanPWMGPIO: int = FAN_PWM_GPIO ) -> None:
     '''
     Control the fan automatically based on CPU temperature (see autoFanSpeed).
     Runs forever unless the fan cannot be set up.
+
+    Parameters:
+        fanPWMGPIO - GPIO the fan PWM line is connected to.
     '''
     log.info( "Starting fan control service in automatic mode." )
-    runFanLoop( autoFanSpeed )
+    runFanLoop( autoFanSpeed, fanPWMGPIO )
 
 def getFanSpeed( temp: float, speedList: list[tuple[int, int]] ) -> float:
     '''
@@ -198,7 +342,8 @@ def getFanSpeed( temp: float, speedList: list[tuple[int, int]] ) -> float:
         speed = 100
     return speed / 100
 
-def controlFanManual( cpufanSpeed: list[tuple[int, int]] ) -> None:
+def controlFanManual( cpufanSpeed: list[tuple[int, int]],
+                      fanPWMGPIO: int = FAN_PWM_GPIO ) -> None:
     '''
     Control the fan from the manual speed table in the configuration file
     (see getFanSpeed).  Runs forever unless the fan cannot be set up.
@@ -206,44 +351,71 @@ def controlFanManual( cpufanSpeed: list[tuple[int, int]] ) -> None:
     Parameters:
         cpufanSpeed - A list of tuples containing a CPU temp and the corresponding
                       fan speed.
+        fanPWMGPIO  - GPIO the fan PWM line is connected to.
     '''
     log.info( f"Starting fan control service in manual mode using data: {cpufanSpeed}." )
-    runFanLoop( lambda cpuTemp: getFanSpeed( cpuTemp.temperature, cpufanSpeed ) )
+    runFanLoop( lambda cpuTemp: getFanSpeed( cpuTemp.temperature, cpufanSpeed ),
+                fanPWMGPIO )
+
+def getGPIOConfig( config: piStorConfig | None = None ) -> tuple[int, int]:
+    '''
+    Return the (fan PWM GPIO, fan tachometer GPIO) pair from the [gpio]
+    section of the configuration.
+
+    Parameters:
+        config - A loaded configuration.  If None, CONFIG_PATH is read; when
+                 that file does not exist the defaults (13, 18) are returned.
+
+    Returns:
+        A (fanPWMGPIO, fanTachGPIO) tuple of BCM GPIO numbers.
+    '''
+    if config is None:
+        if not os.path.isfile( CONFIG_PATH ):
+            return ( FAN_PWM_GPIO, FAN_TACK_GPIO )
+        config = piStorConfig( CONFIG_PATH )
+    return ( config.getFanPWMGPIO(), config.getFanTachGPIO() )
 
 def startFanControl() -> None:
     '''
-    Start the fan controller using the mode from /etc/pistor.conf.
+    Start the fan controller using the mode and GPIOs from /etc/pistor.conf.
 
     If the config file does not exist, logs a warning and starts in automatic
-    mode with default settings. Otherwise reads the config and dispatches to
-    the appropriate control function:
+    mode with default settings (fan PWM on GPIO 13). Otherwise reads the
+    config and dispatches to the appropriate control function, using the
+    fan PWM GPIO from the [gpio] section:
       1 (AUTO_FAN)   - calls controlFanAuto()
       0 (MANUAL_FAN) - calls controlFanManual() with the configured speed table
       other          - logs an error and falls back to controlFanAuto()
     '''
     if not os.path.isfile( CONFIG_PATH ):
         log.warning( f"Config file {CONFIG_PATH} not found, starting with defaults (auto mode)." )
-        controlFanAuto()
+        log.info( f"Fan PWM on GPIO {FAN_PWM_GPIO}, tachometer on GPIO {FAN_TACK_GPIO}." )
+        controlFanAuto( FAN_PWM_GPIO )
         return
 
     config = piStorConfig( CONFIG_PATH )
+    fanPWMGPIO, fanTachGPIO = getGPIOConfig( config )
+    log.info( f"Fan PWM on GPIO {fanPWMGPIO}, tachometer on GPIO {fanTachGPIO}." )
     mode = config.getMode()
     if mode == AUTO_FAN:
-        controlFanAuto()
+        controlFanAuto( fanPWMGPIO )
     elif mode == MANUAL_FAN:
-        controlFanManual( config.getFanSpeed() )
+        controlFanManual( config.getFanSpeed(), fanPWMGPIO )
     else:
         log.error( f"Unknown fan mode of {mode}, reverting to automatic." )
-        controlFanAuto()
+        controlFanAuto( fanPWMGPIO )
 
 def turnOffFan() -> None:
     '''
     Set the fan speed to zero. Called when the SHUTDOWN CLI argument is used.
+    Uses the fan PWM GPIO from /etc/pistor.conf, so it stops the same fan the
+    service drives.
 
     Any GPIO errors are logged but not raised.
     '''
     try:
-        fan = setupFan( FAN_PWM_GPIO )
+        fanPWMGPIO, _ = getGPIOConfig()
+        fan = setupFan( fanPWMGPIO )
         fan.value = 0
     except Exception as error:  # pylint: disable=broad-exception-caught
         log.error( f"Could not turn off fan, Error: {error}" )

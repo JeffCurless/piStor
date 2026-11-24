@@ -6,10 +6,12 @@ Unit tests for src/configtool.py (piStorConfig).
 import os
 import tempfile
 import unittest
+from unittest.mock import patch
 from contextlib import redirect_stdout
 import io
 
-from configtool import AUTO_FAN, MANUAL_FAN, piStorConfig
+from configtool import (AUTO_FAN, DEFAULT_FAN_PWM_GPIO, DEFAULT_FAN_TACH_GPIO,
+                        MANUAL_FAN, piStorConfig)
 from tests import SRC
 
 class TestPiStorConfig(unittest.TestCase):
@@ -142,6 +144,73 @@ class TestPiStorConfig(unittest.TestCase):
             self.assertEqual(piStorConfig(path).getMode(), -1)
         finally:
             self._remove(path)
+
+    # ------------------------------------------------------------------ GPIO settings
+
+    def _gpio(self, content):
+        '''Return (getFanPWMGPIO(), getFanTachGPIO(), printed output) for content.'''
+        path = self._make_conf(content)
+        try:
+            config = piStorConfig(path)
+            with patch('builtins.print') as mock_print:
+                result = (config.getFanPWMGPIO(), config.getFanTachGPIO())
+            return result + (" ".join(str(c.args[0]) for c in mock_print.call_args_list),)
+        finally:
+            self._remove(path)
+
+    def test_gpio_defaults(self):
+        '''The defaults are PWM on GPIO 13 and tachometer on GPIO 18.'''
+        self.assertEqual(DEFAULT_FAN_PWM_GPIO, 13)
+        self.assertEqual(DEFAULT_FAN_TACH_GPIO, 18)
+
+    def test_gpio_configured_values(self):
+        '''[gpio] fanpwm and fantach are returned as ints.'''
+        pwm, tach, _ = self._gpio("[gpio]\nfanpwm = 12\nfantach = 24\n")
+        self.assertEqual((pwm, tach), (12, 24))
+
+    def test_gpio_missing_section_uses_defaults_silently(self):
+        '''With no [gpio] section the defaults are returned without an error.'''
+        pwm, tach, printed = self._gpio("[mode]\nautofan = 1\n")
+        self.assertEqual((pwm, tach), (13, 18))
+        self.assertEqual(printed, "")
+
+    def test_gpio_no_file_uses_defaults(self):
+        '''An unloaded configuration returns the defaults.'''
+        config = piStorConfig()
+        self.assertEqual((config.getFanPWMGPIO(), config.getFanTachGPIO()), (13, 18))
+
+    def test_gpio_missing_key_uses_default(self):
+        '''Each key falls back independently.'''
+        pwm, tach, _ = self._gpio("[gpio]\nfantach = 24\n")
+        self.assertEqual((pwm, tach), (13, 24))
+
+    def test_gpio_non_integer_uses_default(self):
+        '''A non-integer value prints an error and uses the default.'''
+        pwm, tach, printed = self._gpio("[gpio]\nfanpwm = pin33\nfantach = 1.5\n")
+        self.assertEqual((pwm, tach), (13, 18))
+        self.assertIn("fanpwm", printed)
+        self.assertIn("fantach", printed)
+
+    def test_gpio_out_of_range_uses_default(self):
+        '''Values outside GPIO 0-27 print an error and use the default.'''
+        pwm, tach, printed = self._gpio("[gpio]\nfanpwm = 28\nfantach = -1\n")
+        self.assertEqual((pwm, tach), (13, 18))
+        self.assertIn("outside", printed)
+
+    def test_gpio_range_boundaries(self):
+        '''GPIO 0 and 27 are accepted.'''
+        pwm, tach, _ = self._gpio("[gpio]\nfanpwm = 0\nfantach = 27\n")
+        self.assertEqual((pwm, tach), (0, 27))
+
+    def test_gpio_section_name_is_case_sensitive(self):
+        '''[GPIO] is not the [gpio] section, so the defaults are used.'''
+        pwm, tach, _ = self._gpio("[GPIO]\nfanpwm = 12\n")
+        self.assertEqual((pwm, tach), (13, 18))
+
+    def test_bundled_template_gpio(self):
+        '''The repository's pistor.conf sets the default GPIOs explicitly.'''
+        config = piStorConfig(os.path.join(os.path.dirname(__file__), '..', 'src', 'pistor.conf'))
+        self.assertEqual((config.getFanPWMGPIO(), config.getFanTachGPIO()), (13, 18))
 
     # ------------------------------------------------------------------ getFanSpeed
 
